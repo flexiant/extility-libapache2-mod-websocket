@@ -1,0 +1,1 @@
+LoadModule websocket /usr/lib/apache2/modules/websocket_vnc_proxy.so

@@ -1,4 +1,4 @@
-All the directives understood by this version of mod-auth-mysql are listed
+All the directives understood by this version of mod-websocket are listed
 below.  All directives exist in the two forms Auth_MySQL_* and AuthMySQL_*
 and share the same semantics.  They are the result of merging two separate
 versions of the mod_auth_mysql in the first place, both of which had subtly
