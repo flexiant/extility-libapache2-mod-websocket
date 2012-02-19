@@ -4,6 +4,7 @@ build: build-stamp
 build-stamp:
 	dh_testdir
 	apxs2 -c mod_websocket.c
+	apxs2 -c mod_websocket_vnc_proxy.c
 	touch build-stamp
 
 clean:
@@ -11,6 +12,7 @@ clean:
 	dh_testroot
 	rm -f build-stamp 
 	rm -f mod_websocket.o mod_websocket.lo mod_websocket.slo mod_websocket.la
+	rm -f mod_websocket_vnc_proxy.o mod_websocket_vnc_proxy.lo mod_websocket_vnc_proxy.slo mod_websocket_vnc_proxy.la
 	rm -rf .libs
 	dh_clean
 
@@ -42,7 +44,7 @@ binary-arch: build install
 #	dh_installman 
 #	dh_installinfo 
 #	dh_undocumented 
-	dh_installchangelogs ChangeLog
+	dh_installchangelogs
 	dh_link 
 	dh_strip 
 	dh_compress 
