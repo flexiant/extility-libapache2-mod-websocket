@@ -1,1 +1,1 @@
-LoadModule websocket /usr/lib/apache2/modules/websocket_vnc_proxy.so
+LoadModule websocket_vnc_proxy_module /usr/lib/apache2/modules/mod_websocket_vnc_proxy.so

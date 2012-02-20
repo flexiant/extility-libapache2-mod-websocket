@@ -1,0 +1,1 @@
+LoadModule websocket_draft76_module /usr/lib/apache2/modules/mod_websocket_draft76.so

@@ -1,4 +1,6 @@
 .libs/mod_websocket.so usr/lib/apache2/modules
+.libs/mod_websocket_draft76.so usr/lib/apache2/modules
 .libs/mod_websocket_vnc_proxy.so usr/lib/apache2/modules
 debian/websocket.load etc/apache2/mods-available
+debian/websocket_draft76.load etc/apache2/mods-available
 debian/websocket_vnc_proxy.load etc/apache2/mods-available

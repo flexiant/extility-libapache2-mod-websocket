@@ -4,6 +4,7 @@ build: build-stamp
 build-stamp:
 	dh_testdir
 	apxs2 -c mod_websocket.c
+	apxs2 -c mod_websocket_draft76.c
 	apxs2 -c mod_websocket_vnc_proxy.c
 	touch build-stamp
 
@@ -12,6 +13,7 @@ clean:
 	dh_testroot
 	rm -f build-stamp 
 	rm -f mod_websocket.o mod_websocket.lo mod_websocket.slo mod_websocket.la
+	rm -f mod_websocket_draft76.o mod_websocket_draft76.lo mod_websocket_draft76.slo mod_websocket_draft76.la
 	rm -f mod_websocket_vnc_proxy.o mod_websocket_vnc_proxy.lo mod_websocket_vnc_proxy.slo mod_websocket_vnc_proxy.la
 	rm -rf .libs
 	dh_clean

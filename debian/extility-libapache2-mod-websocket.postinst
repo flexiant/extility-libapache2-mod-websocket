@@ -9,10 +9,12 @@ case "$1" in
     :
     if test "${2+set}" != set; then
     a2enmod websocket
+    a2enmod websocket_draft76
     a2enmod websocket_vnc_proxy
       :
     elif test -z "$2" -o "$2" = "<unknown>"; then
     a2enmod websocket
+    a2enmod websocket_draft76
     a2enmod websocket_vnc_proxy
       :
     fi ;;

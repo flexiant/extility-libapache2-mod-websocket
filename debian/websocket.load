@@ -1,1 +1,1 @@
-LoadModule websocket /usr/lib/apache2/modules/mod_websocket.so
+LoadModule websocket_module /usr/lib/apache2/modules/mod_websocket.so

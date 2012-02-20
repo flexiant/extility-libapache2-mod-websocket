@@ -5,6 +5,7 @@ set -e
 if [ "$1" = "remove" -o "$1" = "purge" ]; then
 	if [ -e /etc/apache2/apache2.conf -a -x /usr/sbin/a2dismod ]; then
 		/usr/sbin/a2dismod websocket || true
+		/usr/sbin/a2dismod websocket_draft76 || true
 		/usr/sbin/a2dismod websocket_vnc_proxy || true
 	fi
 fi
