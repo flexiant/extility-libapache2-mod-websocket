@@ -1,13 +1,15 @@
 # @@extility-template: --mode 0444@@
 
 	DBDriver pgsql
-	DBDParams "host=@VNCPROXY_DB_HOST@ dbname=@VNCPROXY_DB_DBNAME@ user=@VNCPROXY_DB_USER@ pass=@VNCPROXY_DB_PASSWORD@"
+	DBDParams "host=@VNCPROXY_DB_HOST@ dbname=@VNCPROXY_DB_DBNAME@ user=@VNCPROXY_DB_USER@ password=@VNCPROXY_DB_PASSWORD@"
 
 	DBDMin  4
 	DBDKeep 8
 	DBDMax  20
 	DBDExptime 300
-
+        <IfModule reqtimeout_module>
+		  RequestReadTimeout body=300,minrate=1
+	</IfModule>
 	<IfModule mod_websocket.c>
 		<Location /vncproxy>
         	  	  SetHandler websocket-handler
@@ -17,9 +19,9 @@
         	  	  WebSocketTcpProxyHost nowhere.example.com.
 		  	  WebSocketTcpProxyPort @VNCPROXY_PORT@
         	  	  WebSocketTcpProxyProtocol base64
-        	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS 'nodehost', vnc_server_port AS 'nodeport', vnc_proxy_ip AS 'clusterhost', vnc_proxy_port AS 'clusterport' FROM vnc_session WHERE session_key=%s"
+        	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS nodehost, vnc_server_port AS nodeport, vnc_proxy_ip AS clusterhost, vnc_proxy_port AS clusterport FROM vnc_session WHERE session_key=%s"
         	  	  WebSocketTcpProxySendInitialData on
-        	  	  WebSocketTcpProxySecret @VNCPROXY_DB_PASSWORD@
+        	  	  WebSocketTcpProxySecret @VNCPROXY_PASSWORD@
 		  	  # WebSocketTcpProxyLocalIP 192.168.250.142
 		</Location>
 	</IfModule>
@@ -33,9 +35,9 @@
         	  	  WebSocketTcpProxyHost nowhere.example.com.
 		  	  WebSocketTcpProxyPort @VNCPROXY_PORT@
         	  	  WebSocketTcpProxyProtocol base64
-        	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS 'nodehost', vnc_server_port AS 'nodeport', vnc_proxy_ip AS 'clusterhost', vnc_proxy_port AS 'clusterport' FROM vnc_session WHERE session_key=%s"
+        	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS nodehost, vnc_server_port AS nodeport, vnc_proxy_ip AS clusterhost, vnc_proxy_port AS clusterport FROM vnc_session WHERE session_key=%s"
         	  	  WebSocketTcpProxySendInitialData on
-        	  	  WebSocketTcpProxySecret @VNCPROXY_DB_PASSWORD@
+        	  	  WebSocketTcpProxySecret @VNCPROXY_PASSWORD@
 		  	  # WebSocketTcpProxyLocalIP 192.168.250.142
 		</Location>
 	</IfModule>
