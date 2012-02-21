@@ -1,0 +1,41 @@
+# @@extility-template: --mode 0444@@
+
+	DBDriver pgsql
+	DBDParams "host=@VNCPROXY_DB_HOST@ dbname=@VNCPROXY_DB_DBNAME@ user=@VNCPROXY_DB_USER@ pass=@VNCPROXY_DB_PASSWORD@"
+
+	DBDMin  4
+	DBDKeep 8
+	DBDMax  20
+	DBDExptime 300
+
+	<IfModule mod_websocket.c>
+		<Location /vncproxy>
+        	  	  SetHandler websocket-handler
+		  	  WebSocketHandler  /usr/lib/apache2/modules/mod_websocket_vnc_proxy.so vnc_proxy_init
+        	  	  WebSocketTcpProxyBase64 on						
+		  	  # Set this to somewhere which deliberately won't look up
+        	  	  WebSocketTcpProxyHost nowhere.example.com.
+		  	  WebSocketTcpProxyPort @VNCPROXY_PORT@
+        	  	  WebSocketTcpProxyProtocol base64
+        	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS 'nodehost', vnc_server_port AS 'nodeport', vnc_proxy_ip AS 'clusterhost', vnc_proxy_port AS 'clusterport' FROM vnc_session WHERE session_key=%s"
+        	  	  WebSocketTcpProxySendInitialData on
+        	  	  WebSocketTcpProxySecret @VNCPROXY_DB_PASSWORD@
+		  	  # WebSocketTcpProxyLocalIP 192.168.250.142
+		</Location>
+	</IfModule>
+	<IfModule mod_websocket_draft76.c>
+		<Location /vncproxy>
+			  SupportDraft75 On
+        	  	  SetHandler websocket-handler
+		  	  WebSocketHandler  /usr/lib/apache2/modules/mod_websocket_vnc_proxy.so vnc_proxy_init
+        	  	  WebSocketTcpProxyBase64 on						
+		  	  # Set this to somewhere which deliberately won't look up
+        	  	  WebSocketTcpProxyHost nowhere.example.com.
+		  	  WebSocketTcpProxyPort @VNCPROXY_PORT@
+        	  	  WebSocketTcpProxyProtocol base64
+        	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS 'nodehost', vnc_server_port AS 'nodeport', vnc_proxy_ip AS 'clusterhost', vnc_proxy_port AS 'clusterport' FROM vnc_session WHERE session_key=%s"
+        	  	  WebSocketTcpProxySendInitialData on
+        	  	  WebSocketTcpProxySecret @VNCPROXY_DB_PASSWORD@
+		  	  # WebSocketTcpProxyLocalIP 192.168.250.142
+		</Location>
+	</IfModule>
