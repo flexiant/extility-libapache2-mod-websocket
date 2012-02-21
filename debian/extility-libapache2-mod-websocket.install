@@ -4,3 +4,4 @@
 debian/websocket.load etc/apache2/mods-available
 debian/websocket_draft76.load etc/apache2/mods-available
 debian/websocket_vnc_proxy.load etc/apache2/mods-available
+vnc-websocket-snippet.conf.in etc/extility/templates
