@@ -3,10 +3,11 @@
 	DBDriver pgsql
 	DBDParams "host=@VNCPROXY_DB_HOST@ dbname=@VNCPROXY_DB_DBNAME@ user=@VNCPROXY_DB_USER@ password=@VNCPROXY_DB_PASSWORD@"
 
-	DBDMin  4
-	DBDKeep 8
-	DBDMax  20
+	DBDMin  0
+	DBDKeep 0
+	DBDMax  1
 	DBDExptime 300
+	DBDPersist Off
         <IfModule reqtimeout_module>
 		  RequestReadTimeout body=300,minrate=1
 	</IfModule>
