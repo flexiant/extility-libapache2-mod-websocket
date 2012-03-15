@@ -13,6 +13,9 @@
 	</IfModule>
 	<IfModule mod_websocket.c>
 		<Location /vncproxy>
+			  Satisfy any
+			  AuthType none
+			  Require all granted
         	  	  SetHandler websocket-handler
 		  	  WebSocketHandler  /usr/lib/apache2/modules/mod_websocket_vnc_proxy.so vnc_proxy_init
         	  	  WebSocketTcpProxyBase64 on						
@@ -28,6 +31,9 @@
 	</IfModule>
 	<IfModule mod_websocket_draft76.c>
 		<Location /vncproxy>
+			  Satisfy any
+			  AuthType none
+			  Require all granted
 			  SupportDraft75 On
         	  	  SetHandler websocket-handler
 		  	  WebSocketHandler  /usr/lib/apache2/modules/mod_websocket_vnc_proxy.so vnc_proxy_init
