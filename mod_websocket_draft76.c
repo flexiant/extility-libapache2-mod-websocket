@@ -496,7 +496,12 @@ static int mod_websocket_method_handler(request_rec *r)
                   mod_websocket_protocol_count, mod_websocket_protocol_index, mod_websocket_protocol_set,
                   mod_websocket_plugin_send, mod_websocket_plugin_close
                 };
-                const char *location = apr_pstrcat(r->pool, (secure ? "wss://" : "ws://"), host, r->parsed_uri.path, NULL);
+                const char *location;
+                if (r->parsed_uri.query && r->parsed_uri.query[0])
+                    location = apr_pstrcat(r->pool, (secure ? "wss://" : "ws://"), host, r->parsed_uri.path,
+                                           "?", r->parsed_uri.query, NULL);
+                else
+                    location = apr_pstrcat(r->pool, (secure ? "wss://" : "ws://"), host, r->parsed_uri.path, NULL);
                 void *plugin_private = NULL;
 
                 apr_table_clear(r->headers_out);
