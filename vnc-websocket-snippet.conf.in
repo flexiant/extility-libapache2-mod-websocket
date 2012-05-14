@@ -26,6 +26,7 @@
         	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS nodehost, vnc_server_port AS nodeport, vnc_proxy_ip AS clusterhost, vnc_proxy_port AS clusterport FROM vnc_session WHERE session_key=%s"
         	  	  WebSocketTcpProxySendInitialData on
         	  	  WebSocketTcpProxySecret @VNCPROXY_PASSWORD@
+			  WebSocketTcpProxyTimeout 300
 		  	  # WebSocketTcpProxyLocalIP 192.168.250.142
 		</Location>
 	</IfModule>
@@ -45,6 +46,7 @@
         	  	  WebSocketTcpProxyQuery "SELECT vnc_server_node AS nodehost, vnc_server_port AS nodeport, vnc_proxy_ip AS clusterhost, vnc_proxy_port AS clusterport FROM vnc_session WHERE session_key=%s"
         	  	  WebSocketTcpProxySendInitialData on
         	  	  WebSocketTcpProxySecret @VNCPROXY_PASSWORD@
+			  WebSocketTcpProxyTimeout 300
 		  	  # WebSocketTcpProxyLocalIP 192.168.250.142
 		</Location>
 	</IfModule>
