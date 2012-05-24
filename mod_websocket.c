@@ -356,25 +356,32 @@ static apr_size_t mod_websocket_read_block(request_rec *r, char *buffer, apr_siz
 
   bb = apr_brigade_create(r->pool, r->connection->bucket_alloc);
   if (bb != NULL) {
-    if ((rv = ap_get_brigade(r->input_filters, bb, AP_MODE_READBYTES, APR_BLOCK_READ, bufsiz)) == APR_SUCCESS) {
-      if ((rv = apr_brigade_flatten(bb, buffer, &bufsiz)) == APR_SUCCESS) {
-        readbufsiz = bufsiz;
-	if (readbufsiz<=0) {
+    do {
+      if ((rv = ap_get_brigade(r->input_filters, bb, AP_MODE_READBYTES, APR_BLOCK_READ, bufsiz)) == APR_SUCCESS) {
+	if ((rv = apr_brigade_flatten(bb, buffer, &bufsiz)) == APR_SUCCESS) {
+	  readbufsiz = bufsiz;
+	  if (readbufsiz<=0) {
+	    APACHELOG(APLOG_DEBUG, r,
+		      "mod_websocket_read_block: apr_brigade_flatten returned readbufsiz<=0 readbufsiz=%d", (int)readbufsiz);
+	  }
+	} else {
+	  char s[1024];
+	  apr_strerror(rv, s, sizeof(s));
 	  APACHELOG(APLOG_DEBUG, r,
-		    "mod_websocket_read_block: apr_brigade_flatten returned readbufsiz<=0 readbufsiz=%d", (int)readbufsiz);
+		    "mod_websocket_read_block: apr_brigade_flatten returned error, rv=%d, err=%s", rv, s);
 	}
+      } else if (APR_IS_STATUS_TIMOUT(rv)) {
+	APACHELOG(APLOG_DEBUG, r,
+		  "mod_websocket_read_block: apr_get_brigade returned a timeout - sleeping briefly");
+	usleep (10000);
+	continue;
       } else {
 	char s[1024];
 	apr_strerror(rv, s, sizeof(s));
 	APACHELOG(APLOG_DEBUG, r,
-		  "mod_websocket_read_block: apr_brigade_flatten returned error, rv=%d, err=%s", rv, s);
+		  "mod_websocket_read_block: apr_get_brigade returned error, rv=%d, err=%s", rv, s);
       }
-    } else {
-      char s[1024];
-      apr_strerror(rv, s, sizeof(s));
-      APACHELOG(APLOG_DEBUG, r,
-		"mod_websocket_read_block: apr_get_brigade returned error, rv=%d, err=%s", rv, s);
-    }
+    } while (0);
     apr_brigade_destroy(bb);
   } else {
     APACHELOG(APLOG_DEBUG, r,
