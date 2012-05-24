@@ -35,6 +35,8 @@
 #include "websocket_plugin.h"
 #include "validate_utf8.h"
 
+#include "http_log.h"
+
 #define CORE_PRIVATE
 #include "http_core.h"
 #include "http_connection.h"
@@ -45,6 +47,8 @@
 #if !defined(APR_ARRAY_PUSH)
 #define APR_ARRAY_PUSH(ary,type) (*((type *)apr_array_push(ary)))
 #endif
+
+#define APACHELOG(severity, handle, message...) ap_log_error(APLOG_MARK, APLOG_NOERRNO | severity, 0, handle->server, message)
 
 module AP_MODULE_DECLARE_DATA websocket_module;
 
@@ -455,6 +459,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
             if ((FRAME_GET_RSV1(block[block_offset]) != 0) ||
                 (FRAME_GET_RSV2(block[block_offset]) != 0) ||
                 (FRAME_GET_RSV3(block[block_offset]) != 0)) {
+	      APACHELOG(APLOG_DEBUG, r,
+			"mod_websocket_data_framing: unrecognised extension");
               framing_state = DATA_FRAMING_CLOSE;
               status_code = STATUS_CODE_PROTOCOL_ERROR;
               break;
@@ -470,6 +476,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
                 frame->opcode = opcode;
                 frame->utf8_state = UTF8_VALID;
               } else {
+		APACHELOG(APLOG_DEBUG, r,
+			  "mod_websocket_data_framing: control frame without FIN set");
                 framing_state = DATA_FRAMING_CLOSE;
                 status_code = STATUS_CODE_PROTOCOL_ERROR;
                 break;
@@ -481,11 +489,15 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
                   frame->opcode = opcode;
                   frame->utf8_state = UTF8_VALID;
                 } else {
+		  APACHELOG(APLOG_DEBUG, r,
+			    "mod_websocket_data_framing: message frame without FIN set");
                   framing_state = DATA_FRAMING_CLOSE;
                   status_code = STATUS_CODE_PROTOCOL_ERROR;
                   break;
                 }
               } else if (frame->fin || ((opcode = frame->opcode) == 0)) {
+		APACHELOG(APLOG_DEBUG, r,
+			  "mod_websocket_data_framing: unexpected fin or opcode: fin=%d, opcode=%d", frame->fin, frame->opcode);
                 framing_state = DATA_FRAMING_CLOSE;
                 status_code = STATUS_CODE_PROTOCOL_ERROR;
                 break;
@@ -514,7 +526,9 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
             if ((masking == 0) ||          /* Client-side mask is required */
                ((opcode >= 0x8) &&         /* Control opcodes cannot have a */
                 (payload_length_bytes_remaining != 0))) { /* payload larger than 125 bytes */
-              framing_state = DATA_FRAMING_CLOSE;
+	      APACHELOG(APLOG_DEBUG, r,
+			"mod_websocket_data_framing: bad masking / opcode / remaining bytes: masking=%d, opcode=%d, plbr=%d", masking, opcode, payload_length_bytes_remaining);
+	      framing_state = DATA_FRAMING_CLOSE;
               status_code = STATUS_CODE_PROTOCOL_ERROR;
               break;
             } else {
@@ -532,6 +546,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
             if (payload_length_bytes_remaining == 0) {
               if ((payload_length < 0) || (payload_length > conf->payload_limit)) {
                 /* Invalid payload length */
+		APACHELOG(APLOG_DEBUG, r,
+			  "mod_websocket_data_framing: invalid payload length: payload_length=%lld, conf->payload_limit=%lld", (unsigned long long) payload_length, (unsigned long long)(conf->payload_limit));
                 framing_state = DATA_FRAMING_CLOSE;
                 status_code = (state->protocol_version >= 13) ? STATUS_CODE_MESSAGE_TOO_LARGE : STATUS_CODE_RESERVED;
                 break;
@@ -567,6 +583,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
               if (payload_length > 0) {
                 frame->application_data = (unsigned char *) realloc(frame->application_data, frame->application_data_offset + payload_length);
                 if (frame->application_data == NULL) {
+		  APACHELOG(APLOG_DEBUG, r,
+			    "mod_websocket_data_framing: extension data problem");
                   framing_state = DATA_FRAMING_CLOSE;
                   status_code = (state->protocol_version >= 13) ? STATUS_CODE_INTERNAL_ERROR : STATUS_CODE_GOING_AWAY;
                   break;
@@ -635,6 +653,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
                   case OPCODE_TEXT:
                     if ((fin && (frame->utf8_state != UTF8_VALID)) ||
                                 (frame->utf8_state == UTF8_INVALID)) {
+		      APACHELOG(APLOG_DEBUG, r,
+				"mod_websocket_data_framing: bad UTF-8: fin=%d, state=%d", fin, frame->utf8_state);
                       framing_state = DATA_FRAMING_CLOSE;
                       status_code = STATUS_CODE_INVALID_UTF8;
                     } else {
@@ -645,6 +665,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
                     message_type = MESSAGE_TYPE_BINARY;
                     break;
                   case OPCODE_CLOSE:
+		    APACHELOG(APLOG_DEBUG, r,
+			      "mod_websocket_data_framing: received OPCODE_CLOSED");
                     framing_state = DATA_FRAMING_CLOSE;
                     status_code = STATUS_CODE_OK;
                     break;
@@ -654,6 +676,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
                   case OPCODE_PONG:
                     break;
                   default:
+		    APACHELOG(APLOG_DEBUG, r,
+			      "mod_websocket_data_framing: invalid opcode, opcode=%d", opcode);
                     framing_state = DATA_FRAMING_CLOSE;
                     status_code = STATUS_CODE_PROTOCOL_ERROR;
                     break;
@@ -681,6 +705,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
             block_offset = block_size;
             break;
           default:
+	    APACHELOG(APLOG_DEBUG, r,
+		      "mod_websocket_data_framing: invalid state, state=%d", framing_state);
             framing_state = DATA_FRAMING_CLOSE;
             status_code = STATUS_CODE_PROTOCOL_ERROR;
             break;
@@ -697,6 +723,8 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
     /* Send server-side closing handshake */
     status_code_buffer[0] = (status_code >> 8) & 0xFF;
     status_code_buffer[1] =  status_code       & 0xFF;
+    APACHELOG(APLOG_DEBUG, r,
+	      "mod_websocket_data_framing: sending natural close");
     mod_websocket_plugin_send(server, MESSAGE_TYPE_CLOSE, status_code_buffer, sizeof(status_code_buffer));
 
     /* We are done with the bucket brigade */
