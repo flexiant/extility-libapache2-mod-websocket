@@ -370,7 +370,7 @@ static apr_size_t mod_websocket_read_block(request_rec *r, char *buffer, apr_siz
 	  APACHELOG(APLOG_DEBUG, r,
 		    "mod_websocket_read_block: apr_brigade_flatten returned error, rv=%d, err=%s", rv, s);
 	}
-      } else if (APR_IS_STATUS_TIMOUT(rv)) {
+      } else if (APR_IS_STATUS_TIMEOUT(rv)) {
 	APACHELOG(APLOG_DEBUG, r,
 		  "mod_websocket_read_block: apr_get_brigade returned a timeout - sleeping briefly");
 	usleep (10000);
