@@ -381,7 +381,8 @@ static apr_size_t mod_websocket_read_block(request_rec *r, char *buffer, apr_siz
 	APACHELOG(APLOG_DEBUG, r,
 		  "mod_websocket_read_block: apr_get_brigade returned error, rv=%d, err=%s", rv, s);
       }
-    } while (0);
+      break;
+    } while (1);
     apr_brigade_destroy(bb);
   } else {
     APACHELOG(APLOG_DEBUG, r,
