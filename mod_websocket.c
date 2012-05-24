@@ -724,7 +724,7 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
     status_code_buffer[0] = (status_code >> 8) & 0xFF;
     status_code_buffer[1] =  status_code       & 0xFF;
     APACHELOG(APLOG_DEBUG, r,
-	      "mod_websocket_data_framing: sending natural close");
+	      "mod_websocket_data_framing: sending natural close, framing_state=%d, block_size=%lld", framing_state, (unsigned long long)block_size);
     mod_websocket_plugin_send(server, MESSAGE_TYPE_CLOSE, status_code_buffer, sizeof(status_code_buffer));
 
     /* We are done with the bucket brigade */
