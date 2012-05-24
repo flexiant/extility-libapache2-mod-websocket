@@ -359,9 +359,26 @@ static apr_size_t mod_websocket_read_block(request_rec *r, char *buffer, apr_siz
     if ((rv = ap_get_brigade(r->input_filters, bb, AP_MODE_READBYTES, APR_BLOCK_READ, bufsiz)) == APR_SUCCESS) {
       if ((rv = apr_brigade_flatten(bb, buffer, &bufsiz)) == APR_SUCCESS) {
         readbufsiz = bufsiz;
+	if (readbufsiz<=0) {
+	  APACHELOG(APLOG_DEBUG, r,
+		    "mod_websocket_read_block: apr_brigade_flatten returned readbufsiz<=0 readbufsiz=%d", (int)readbufsiz);
+	}
+      } else {
+	char s[1024];
+	apr_strerror(rv, s, sizeof(s));
+	APACHELOG(APLOG_DEBUG, r,
+		  "mod_websocket_read_block: apr_brigade_flatten returned error, rv=%d, err=%s", rv, s);
       }
+    } else {
+      char s[1024];
+      apr_strerror(rv, s, sizeof(s));
+      APACHELOG(APLOG_DEBUG, r,
+		"mod_websocket_read_block: apr_get_brigade returned error, rv=%d, err=%s", rv, s);
     }
     apr_brigade_destroy(bb);
+  } else {
+    APACHELOG(APLOG_DEBUG, r,
+	      "mod_websocket_read_block: apr_brigade_create returned NULL");
   }
   return readbufsiz;
 }
@@ -547,7 +564,7 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
               if ((payload_length < 0) || (payload_length > conf->payload_limit)) {
                 /* Invalid payload length */
 		APACHELOG(APLOG_DEBUG, r,
-			  "mod_websocket_data_framing: invalid payload length: payload_length=%lld, conf->payload_limit=%lld", (unsigned long long) payload_length, (unsigned long long)(conf->payload_limit));
+			  "mod_websocket_data_framing: invalid payload length: payload_length=%d, conf->payload_limit=%dd", (int) payload_length, (int)(conf->payload_limit));
                 framing_state = DATA_FRAMING_CLOSE;
                 status_code = (state->protocol_version >= 13) ? STATUS_CODE_MESSAGE_TOO_LARGE : STATUS_CODE_RESERVED;
                 break;
@@ -724,7 +741,7 @@ static void mod_websocket_data_framing(const struct _WebSocketServer *server, we
     status_code_buffer[0] = (status_code >> 8) & 0xFF;
     status_code_buffer[1] =  status_code       & 0xFF;
     APACHELOG(APLOG_DEBUG, r,
-	      "mod_websocket_data_framing: sending natural close, framing_state=%d, block_size=%lld", framing_state, (unsigned long long)block_size);
+	      "mod_websocket_data_framing: sending natural close, framing_state=%d, block_size=%d", framing_state, (int)block_size);
     mod_websocket_plugin_send(server, MESSAGE_TYPE_CLOSE, status_code_buffer, sizeof(status_code_buffer));
 
     /* We are done with the bucket brigade */
