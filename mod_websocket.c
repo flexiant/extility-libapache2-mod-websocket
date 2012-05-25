@@ -357,7 +357,9 @@ static apr_size_t mod_websocket_read_block(request_rec *r, char *buffer, apr_siz
   bb = apr_brigade_create(r->pool, r->connection->bucket_alloc);
   if (bb != NULL) {
     do {
+      apr_socket_timeout_set(ap_get_module_config(r->connection->conn_config, &core_module), -1);
       if ((rv = ap_get_brigade(r->input_filters, bb, AP_MODE_READBYTES, APR_BLOCK_READ, bufsiz)) == APR_SUCCESS) {
+	apr_socket_timeout_set(ap_get_module_config(r->connection->conn_config, &core_module), -1);
 	if ((rv = apr_brigade_flatten(bb, buffer, &bufsiz)) == APR_SUCCESS) {
 	  readbufsiz = bufsiz;
 	  if (readbufsiz<=0) {
