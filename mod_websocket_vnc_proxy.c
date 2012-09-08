@@ -92,6 +92,7 @@ typedef struct
     int base64;
     int sendinitialdata;
     int timeout;
+    int guacamole;
     char *query;
 } websocket_tcp_proxy_config_rec;
 
@@ -107,6 +108,7 @@ typedef struct _TcpProxyData
     int base64;
     int sendinitialdata;
     int timeout;
+    int guacamole;
     char *host;
     char *port;
     char *localip;
@@ -257,11 +259,13 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
                         clusterport = apr_pstrdup(mp, fieldvalue);
                 }
             }
-            if (nodehost && nodeport && clusterhost && clusterport) {
-                tpd->nodehost = nodehost;
-                tpd->nodeport = nodeport;
+            if (clusterhost && clusterport) {
                 tpd->host = clusterhost;
                 tpd->port = clusterport;
+                if (nodehost)
+                    tpd->nodehost = nodehost;
+                if (nodeport)
+                    tpd->nodeport = nodeport;
                 found = 1;
                 APACHELOG(APLOG_DEBUG, r,
                           "tcp_proxy_query_key: found parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
@@ -342,7 +346,7 @@ static apr_status_t tcp_proxy_do_authenticate(request_rec * r,
         return APR_BADARG;
     }
 
-    if (!(tpd->nodehost && tpd->nodeport && tpd->host && tpd->port)) {
+    if (!( ((tpd->nodehost && tpd->nodeport) || !(tpd->sendinitialdata)) && tpd->host && tpd->port)) {
         APACHELOG(APLOG_DEBUG, r,
                   "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
                   tpd->nodehost?tpd->nodehost:"(none)",
@@ -567,6 +571,18 @@ static apr_status_t tcp_proxy_do_tcp_connect(request_rec * r,
 }
 
 
+void guacdump (request_rec * r, char * msg, char * buf, size_t start, size_t end)
+{
+    size_t s = end-start+1;
+    char * b = malloc(s);
+    if (b) {
+        memcpy(b, buf+start, s-1);
+        b[s-1]=0;
+        APACHELOG(APLOG_DEBUG, r, "%s: '%s'", msg, b);
+        free (b);
+    }
+}
+
 /* This function READS from the tcp socket and WRITES to the web socket */
 
 void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
@@ -574,10 +590,15 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
     char buffer[64];
     TcpProxyData *tpd = (TcpProxyData *) data;
 
-    if (tpd != NULL) {
-        request_rec *r = (tpd->server)->request(tpd->server);
+    if (!tpd)
+        return NULL;
 
-        apr_interval_time_t timeout = APR_USEC_PER_SEC * ((tpd->timeout)?tpd->timeout:30);
+    request_rec *r = (tpd->server)->request(tpd->server);
+
+    apr_interval_time_t timeout = APR_USEC_PER_SEC * ((tpd->timeout)?tpd->timeout:30);
+
+    if (!tpd->guacamole) {
+        /* Non-guacamole mode - buffer as much as we can */
 
         APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run start");
 
@@ -683,8 +704,281 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
         APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run stop");
 
+    } else {
+
+        /* We're in guacamole mode. Guacamole (unfortunately) requires that its messages
+         * are not broken across websocket frames. This means we need to understand the
+         * underlying protocol as we have no idea what tcp buffering might have done on
+         * the way.
+         *
+         * For now we will use one websocket message per guacamole instruction.
+         *
+         * Guacamole protocol is described at
+         *   http://guac-dev.org/Guacamole%20Protocol
+         *
+         * In essence it is a text base protocol made up of instructions. Each instruction is
+         * a comma delimited list followed by a terminating semicolon. This semicolon is
+         * immediately followed by the next instruction. Each instruction takes the form
+         *    OPCODE,ARG1,ARG2,...;
+         * Each OPCADE and ARG can contain any character (including a semicolon) so we can't
+         * just look for semicolos. But fortunately each OPCODE or ARG takes the form
+         *    LENGTH.VALUE
+         * where LENGTH is a decimal integer length of the VALUE field (excluding the
+         * dot). The VALUE field is not null terminated. So, for instance:
+         *    4.size,1.0,4.1024,3.768;
+         *
+         * We don't use apache memory handling here because of the lack of realloc and/or
+         * explicit free.
+         */
+        
+        /*
+         * Buffer arrangement
+         *
+         * 0             bufwritep         bufreadp    bufsize
+         * V             V                 V           V  
+         * XXXXXXXXXXXXXXDDDDDDDDDDDDDDDDDD------------|
+         * |   |            |                 |
+         * |   |            |                 \_ Free memory
+         * |   \            \  
+         * |    \            \_____ Data yet to be written to websocket
+         * |     \         
+         * buf    \______ Data already written to websocket
+         */
+
+        size_t bufsize = 0;
+        size_t bufwritep = 0;
+        size_t bufreadp = 0;
+        const size_t minread = 1024;
+        const size_t maxbufsize = 16*1024*1024;
+        char * buf = NULL;
+
+
+        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run start guacamole mode");
+
+        /* Keep sending messages as long as the connection is active */
+        while (tpd->active && tpd->tcpsocket) {
+
+            /* First let's see if we've got a completely empty buffer */
+            if (bufreadp == bufwritep) {
+                /* If so, junk all the data written to the websocket without
+                 * reallocating the buffer */
+                bufreadp = 0;
+                bufwritep = 0;
+            }
+
+            /* We know we need to read at least minread bytes
+             * so the easy case is that they just fit in the current buffer
+             */
+            if (bufsize-bufreadp < minread) {
+                /* Right, we can't fit it in the current buffer. Where
+                 * bufindex > 0 we've got current data, so we'll
+                 * reallocate and expunge that first
+                 */
+                if (bufwritep > 0) {
+                    char * newbuf = malloc(bufsize);
+                    if (!newbuf) {
+                        APACHELOG(APLOG_DEBUG, r,
+                                  "tcp_proxy_run could not allocate guacamole buffer");
+                        goto guacerror;
+                    }
+                    if (buf && (bufreadp > bufwritep))
+                        memcpy(newbuf, buf+bufwritep, bufreadp-bufwritep);
+                    bufreadp -= bufwritep;
+                    bufwritep = 0;
+                    if (buf)
+                        free (buf);
+                    buf = newbuf;
+                }
+                
+                /* We now know bufwritep is zero, i.e. there is no data that has
+                 * already been written hanging around. So lets see whether we
+                 * can do a read of length minread now
+                 */
+                if (bufsize-bufreadp < minread) {
+                    /* No we can't, so we straightforwardly need a larger buffer.
+                     * (a buffer might not have been allocated yet)
+                     */
+                    size_t newbufsize = bufsize * 2; /* make sure we double the size of the buffer */
+                    if (newbufsize > maxbufsize)
+                        newbufsize = maxbufsize; /* but don't make it larger than the maximum */
+                    if (newbufsize < bufreadp + minread) /* Make it large enough for the read we need */
+                        newbufsize = bufreadp + minread; /* Note this is how the initial size is set */
+                    if (newbufsize > maxbufsize)
+                        {
+                            APACHELOG(APLOG_DEBUG, r,
+                                      "tcp_proxy_run guacamole buffer grew to illegal size");
+                            goto guacerror;
+                        }
+                    char * newbuf = realloc (buf, newbufsize); /* realloc when buf in NULL is a malloc */
+                    if (!newbuf) {
+                        /* remember to free buf */
+                        APACHELOG(APLOG_DEBUG, r,
+                                  "tcp_proxy_run could not reallocate guacamole buffer");
+                        goto guacerror;
+                    }
+                    buf = newbuf;
+                    bufsize = newbufsize;
+                }
+            }
+
+            /* Check we now have a buffer and sace to read into - this should always be the case */
+            if (!buf || (bufsize-bufreadp < minread)) {
+                APACHELOG(APLOG_DEBUG, r,
+                          "tcp_proxy_run guacamole logic error");
+                goto guacerror;
+            }
+
+            apr_size_t len;
+
+            while (1) {
+                /* Of course we may be able to read far more than minread, so let's go for that */
+                len = bufsize - bufreadp;
+                
+                const apr_pollfd_t *ret_pfd = NULL;
+                apr_int32_t num = 0;
+                apr_status_t rv;
+                
+                /* FIXME: implement timeout through gettimeofday */
+
+                rv = apr_pollset_poll(tpd->recvpollset, APR_USEC_PER_SEC, &num, &ret_pfd);
+                
+                if (!(tpd->active && tpd->tcpsocket)) {
+                    APACHELOG(APLOG_DEBUG, r,
+                              "tcp_proxy_run quitting guacamole mode as connection has been marked inactive");
+                    goto guacdone;
+                }
+                
+                if (APR_STATUS_IS_TIMEUP(rv))
+                    continue;
+
+                if (rv != APR_SUCCESS) {
+                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: poll returned an error");
+                    goto guacerror;
+                }
+
+                if (num<=0) {
+                    /* Poll returned success, but no descriptors were ready. Very odd */
+                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: sleeping guac 2");
+                    usleep(10000);      /* this should not happen */
+                    continue;
+                }
+
+                rv = apr_socket_recv(tpd->tcpsocket, buf+bufreadp, &len);
+                if (APR_STATUS_IS_EAGAIN(rv)) { /* we have no data to read yet, we should try rereading */
+                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: sleeping guac 3");
+                    usleep(10000);
+                    continue;
+                }
+
+                if (APR_STATUS_IS_EOF(rv) || !len) {
+                    /* we lost the TCP session */
+                    APACHELOG(APLOG_DEBUG, r,
+                              "tcp_proxy_run quitting guacamole mode as TCP connection closed");
+                    goto guacdone;
+                }
+
+                /* We have data */
+                break;
+            }
+
+            bufreadp += len;
+
+            /* APACHELOG(APLOG_DEBUG, r,
+	       "tcp_proxy_run ***guac read bytes len=%lu bufwrirep=%lu bufreadpp=%lu", len, bufreadp, bufwritep); */
+
+            /* So now we have an instruction starting at bufwritep, and terminating either before
+             * bufreadp (in which case we can write it and look for more) or possibly not terminating
+             * in which case we need to loop around again to read more data
+             */
+
+            size_t p = bufwritep;
+            while (p < bufreadp) {
+
+                /* Skip along until we find a semicolon */
+                int write=0;
+                while (!write) {
+		  /*
+                    APACHELOG(APLOG_DEBUG, r,
+                              "tcp_proxy_run ***guac decode loop p=%lu bufwrirep=%lu bufreadpp=%lu", p, bufreadp, bufwritep);
+                    guacdump(r, "tcp_proxy_run ***guac string is", buf, p, bufreadp);
+		  */
+
+                    if (p >= bufreadp)
+                        goto readmore;
+                    size_t arglen = 0;
+                    while (isdigit(buf[p])) {
+                        arglen = arglen * 10 + ( buf[p++] - '0');
+                        if (p >= bufreadp)
+                            goto readmore;
+                    }
+                    /* arglen must be non-zero, and we know buf[p] is valid (as p<bufreadp) and must point
+                     * to the dot
+                     */
+                    if (!arglen || (buf[p] != '.')) {
+                        APACHELOG(LOG_DEBUG, r,
+                                  "tcp_proxy_run bad guacamole length");
+                        goto guacerror;
+                    }
+                    /* So, consider, to step to the comma we need to add arglen+1
+                     * 4.size,
+                     *  ^
+                     *  p
+                     */
+                    p+=arglen+1;
+                    if (p >= bufreadp)
+                        goto readmore;
+                    switch (buf[p++]) {
+                    case ',':
+                        continue;
+                    case ';':
+                        write = 1;
+                        break;
+                    default:
+                        APACHELOG(LOG_DEBUG, r,
+                                  "tcp_proxy_run bad guacamole terminator");
+                        goto guacerror;
+                        break;
+                    }
+                }
+
+                /* So now we know we can write bufwritep ... p */
+
+                /* FIXME: support base64 - actually guacamole doesn't use it */
+
+                size_t towrite = p - bufwritep;
+                size_t written =
+                    tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT,
+                                      (unsigned char *) (buf + bufwritep), towrite);
+                if (written != towrite) {
+                    APACHELOG(APLOG_DEBUG, r,
+                          "tcp_proxy_run guacamole send failed, wrote %lu bytes of %lu",
+                          (unsigned long) written, (unsigned long) len);
+                    goto guacerror;
+                }
+
+                /* Step forward past the bit we've just written */
+                bufwritep = p;
+                
+                /* And loop to see whether we have any more instructions */
+            }
+          readmore:
+            continue; /* to avoid 'label at end of compound statement' error */
+        }
+
+      guacdone:
+        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run stop guacamole mode");
+        tcp_proxy_shutdown_socket(tpd);
+        tpd->server->close(tpd->server);
+        return NULL;
+
+      guacerror:
+        tcp_proxy_shutdown_socket(tpd);
+        tpd->server->close(tpd->server);
+        return NULL;
     }
+
     return NULL;
+
 }
 
 /* this routine takes data FROM the web socket and writes it to the tcp socket */
@@ -875,6 +1169,7 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
                     tpd->base64 = 0;
                     tpd->sendinitialdata = 0;
                     tpd->timeout = 30;
+                    tpd->guacamole = 0;
                     tpd->port = "echo";
                     tpd->host = "127.0.0.1";
                     tpd->secret = "none";
@@ -893,6 +1188,7 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
                         tpd->base64 = conf->base64;
                         tpd->sendinitialdata = conf->sendinitialdata;
                         tpd->timeout = conf->timeout;
+                        tpd->guacamole = conf->guacamole;
                         if (conf->host)
                             tpd->host = apr_pstrdup(pool, conf->host);
                         if (conf->port)
@@ -1022,6 +1318,15 @@ static const char *mod_websocket_tcp_proxy_conf_base64(cmd_parms * cmd,
     return NULL;
 }
 
+static const char *mod_websocket_tcp_proxy_conf_guacamole(cmd_parms * cmd,
+                                                       void *config, int flag)
+{
+    websocket_tcp_proxy_config_rec *cfg =
+        (websocket_tcp_proxy_config_rec *) config;
+    cfg->guacamole = flag;
+    return NULL;
+}
+
 static const char *mod_websocket_tcp_proxy_conf_sendinitialdata(cmd_parms * cmd,
                                                                 void *config, int flag)
 {
@@ -1095,6 +1400,9 @@ static const command_rec mod_websocket_tcp_proxy_cmds[] = {
     AP_INIT_FLAG("WebSocketTcpProxyBase64",
                  mod_websocket_tcp_proxy_conf_base64, NULL, OR_AUTHCFG,
                  "Flag to indicate use of base64 encoding; defaults to off"),
+    AP_INIT_FLAG("WebSocketTcpProxyGuacamole",
+                 mod_websocket_tcp_proxy_conf_guacamole, NULL, OR_AUTHCFG,
+                 "Flag to indicate use of guacamole protocol; defaults to off"),
     AP_INIT_FLAG("WebSocketTcpProxySendInitialData",
                  mod_websocket_tcp_proxy_conf_sendinitialdata, NULL, OR_AUTHCFG,
                  "Flag to indicate need to send initial data; defaults to off"),
@@ -1135,6 +1443,7 @@ static void *mod_websocket_tcp_proxy_create_dir_config(apr_pool_t * p,
             conf->location = apr_pstrdup(p, path);
             conf->base64 = 0;
             conf->sendinitialdata = 0;
+            conf->guacamole = 0;
             conf->host = apr_pstrdup(p, "127.0.0.1");
             conf->port = apr_pstrdup(p, "echo");
             conf->secret = apr_pstrdup(p, "none");
