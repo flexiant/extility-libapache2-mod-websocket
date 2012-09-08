@@ -764,6 +764,14 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                  * reallocating the buffer */
                 bufreadp = 0;
                 bufwritep = 0;
+                if (bufsize > minread) {
+                    /* The buffer was grown, and now is empty, so we might as well free it
+                     * up to free memory, which means it will be reallocated down below
+                     */
+                    free(buf);
+                    buf = NULL;
+                    bufsize=0;
+                }
             }
 
             /* We know we need to read at least minread bytes
@@ -809,6 +817,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                                       "tcp_proxy_run guacamole buffer grew to illegal size");
                             goto guacerror;
                         }
+                    APACHELOG(APLOG_DEBUG, r,
+                              "tcp_proxy_run expanding guacamole buffer to %lu bytes", newbufsize);
                     char * newbuf = realloc (buf, newbufsize); /* realloc when buf in NULL is a malloc */
                     if (!newbuf) {
                         /* remember to free buf */
@@ -824,7 +834,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
             /* Check we now have a buffer and sace to read into - this should always be the case */
             if (!buf || (bufsize-bufreadp < minread)) {
                 APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run guacamole logic error");
+                          "tcp_proxy_run guacamole logic error, buf=%lx bufsize=%lu bufread=%lu minread=%lu", (intptr_t)buf, bufsize, bufreadp, minread);
                 goto guacerror;
             }
 
@@ -883,8 +893,10 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
             bufreadp += len;
 
-            /* APACHELOG(APLOG_DEBUG, r,
-	       "tcp_proxy_run ***guac read bytes len=%lu bufwrirep=%lu bufreadpp=%lu", len, bufreadp, bufwritep); */
+	    /*
+            APACHELOG(APLOG_DEBUG, r,
+		      "tcp_proxy_run ***guac read bytes len=%lu bufwrirep=%lu bufreadpp=%lu", len, bufreadp, bufwritep);
+	    */
 
             /* So now we have an instruction starting at bufwritep, and terminating either before
              * bufreadp (in which case we can write it and look for more) or possibly not terminating
@@ -946,6 +958,10 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 /* FIXME: support base64 - actually guacamole doesn't use it */
 
                 size_t towrite = p - bufwritep;
+		/*
+		APACHELOG(APLOG_DEBUG, r,
+                          "tcp_proxy_run ***guac writing %lu bytes", towrite);
+		*/
                 size_t written =
                     tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT,
                                       (unsigned char *) (buf + bufwritep), towrite);
@@ -967,11 +983,9 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
       guacdone:
         APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run stop guacamole mode");
-        tcp_proxy_shutdown_socket(tpd);
-        tpd->server->close(tpd->server);
-        return NULL;
-
       guacerror:
+	if (buf)
+	  free (buf);
         tcp_proxy_shutdown_socket(tpd);
         tpd->server->close(tpd->server);
         return NULL;
