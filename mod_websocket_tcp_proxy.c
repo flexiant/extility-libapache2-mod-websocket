@@ -282,9 +282,9 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
         }
 
         /*
-           len = 2;
-           rv = apr_socket_send(tpd->tcpsocket, "\r\n", &len);
-         */
+          len = 2;
+          rv = apr_socket_send(tpd->tcpsocket, "\r\n", &len);
+        */
     }
 
     return 0;
