@@ -76,8 +76,6 @@
 
 #include "websocket_plugin.h"
 
-#define APACHELOG(severity, handle, message...) ap_log_error(APLOG_MARK, APLOG_NOERRNO | severity, 0, handle->server, message)
-
 #define VNCHEADERMAGIC 0xAB15AB1E
 #define VNCGREETINGMAGIC 0x564e4321
 
@@ -191,7 +189,7 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
             case '_':
                 break;
             default:
-                APACHELOG(APLOG_DEBUG, r, "DBI: bad key");
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "DBI: bad key");
                 return APR_BADARG;
             }
     }
@@ -222,8 +220,8 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
 
     int found = 0;
 
-    APACHELOG(APLOG_DEBUG, r,
-              "tcp_proxy_query_key: running through results");
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_query_key: running through results");
 
     for (rv = apr_dbd_get_row(dbd->driver, r->pool, res, &row, -1);
          rv != -1;
@@ -235,8 +233,8 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
             return APR_BADARG;
         }
 
-        APACHELOG(APLOG_DEBUG, r,
-                  "tcp_proxy_query_key: found a matching line");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_query_key: found a matching line");
                 
         if (!found) {
             char *nodehost = NULL;
@@ -251,10 +249,10 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
                 
                 const char *fieldvalue = apr_dbd_get_entry(dbd->driver, row, i++);
 
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_query_key: found field '%s'='%s'",
-                          fieldname,
-                          fieldvalue);
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                              "tcp_proxy_query_key: found field '%s'='%s'",
+                              fieldname,
+                              fieldvalue);
                 
                 if (fieldvalue) {
                     if (!strcmp(fieldname, "nodehost"))
@@ -275,12 +273,12 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
                 if (nodeport)
                     tpd->nodeport = nodeport;
                 found = 1;
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_query_key: found parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
-                          tpd->nodehost?tpd->nodehost:"(none)",
-                          tpd->nodeport?tpd->nodeport:"(none)",
-                          tpd->host?tpd->host:"(none)",
-                          tpd->port?tpd->port:"(none)");
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                              "tcp_proxy_query_key: found parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
+                              tpd->nodehost?tpd->nodehost:"(none)",
+                              tpd->nodeport?tpd->nodeport:"(none)",
+                              tpd->host?tpd->host:"(none)",
+                              tpd->port?tpd->port:"(none)");
                 /* we can't break out here or row won't get cleaned up */
             }
 
@@ -289,8 +287,8 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
         
     }
 
-    APACHELOG(APLOG_DEBUG, r,
-              "tcp_proxy_query_key: found=%d", found);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_query_key: found=%d", found);
 
     if (!found)
         return APR_BADARG;
@@ -304,7 +302,7 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
  */
 
 static char *tcp_proxy_get_key(request_rec * r,
-                                     TcpProxyData * tpd, apr_pool_t * mp)
+                               TcpProxyData * tpd, apr_pool_t * mp)
 {
     const char *args = r->args;
     const char *param;
@@ -338,29 +336,29 @@ static apr_status_t tcp_proxy_do_authenticate(request_rec * r,
 
     tpd->key = tcp_proxy_get_key(r, tpd, mp);
     if (!tpd->key) {
-        APACHELOG(APLOG_DEBUG, r,
-                  "tcp_proxy_do_authenticate: no key");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_do_authenticate: no key");
         return APR_BADARG;
     }
 
-    APACHELOG(APLOG_DEBUG, r,
-              "tcp_proxy_do_authenticate: key is '%s'",
-              tpd->key);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_do_authenticate: key is '%s'",
+                  tpd->key);
 
     /* Look up tpd->host, tpd->port, nodehost, nodeport using key */
     if (APR_SUCCESS != tcp_proxy_query_key(r, tpd, mp)) {
-        APACHELOG(APLOG_DEBUG, r,
-                  "tcp_proxy_do_authenticate: query_key failed");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_do_authenticate: query_key failed");
         return APR_BADARG;
     }
 
     if (!( ((tpd->nodehost && tpd->nodeport) || !(tpd->sendinitialdata)) && tpd->host && tpd->port)) {
-        APACHELOG(APLOG_DEBUG, r,
-                  "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
-                  tpd->nodehost?tpd->nodehost:"(none)",
-                  tpd->nodeport?tpd->nodeport:"(none)",
-                  tpd->host?tpd->host:"(none)",
-                  tpd->port?tpd->port:"(none)"
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
+                      tpd->nodehost?tpd->nodehost:"(none)",
+                      tpd->nodeport?tpd->nodeport:"(none)",
+                      tpd->host?tpd->host:"(none)",
+                      tpd->port?tpd->port:"(none)"
             );
         return APR_BADARG;
     }
@@ -389,24 +387,24 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
         return rv;
 
     if (hlen != sizeof (vncheader)) {
-        APACHELOG (APLOG_DEBUG, r, "tcp_proxy_do_authenticate: could not read whole header");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: could not read whole header");
         return APR_BADARG;
     }
 
     if (ntohl (header.magic) != VNCGREETINGMAGIC) {
-        APACHELOG (APLOG_DEBUG, r, "tcp_proxy_do_authenticate: bad magic");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: bad magic");
         return APR_BADARG;
     }
 
     if (ntohs (header.version) != 1) {
-        APACHELOG (APLOG_DEBUG, r, "tcp_proxy_do_authenticate: bad version");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: bad version");
         return APR_BADARG;
     }
 
     len = ntohs (header.length);
 
     if (len>1024) {
-        APACHELOG (APLOG_DEBUG, r, "tcp_proxy_do_authenticate: bad length");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: bad length");
         return APR_BADARG;
     }
 
@@ -420,7 +418,7 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
         return rv;
 
     if (len != ntohs (header.length)) {
-        APACHELOG (APLOG_DEBUG, r, "tcp_proxy_do_authenticate: could not read whole header (2)");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: could not read whole header (2)");
         return APR_BADARG;
     }
 
@@ -433,16 +431,16 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
         }
     }
 
-    APACHELOG (APLOG_DEBUG, r, "tcp_proxy_do_authenticate: read nonce of '%s'", tpd->nonce);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: read nonce of '%s'", tpd->nonce);
 
     if (!(tpd->nodehost && tpd->nodeport && tpd->host && tpd->port && tpd->nonce)) {
-        APACHELOG(APLOG_DEBUG, r,
-                  "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s nonce=%s",
-                  tpd->nodehost?tpd->nodehost:"(none)",
-                  tpd->nodeport?tpd->nodeport:"(none)",
-                  tpd->host?tpd->host:"(none)",
-                  tpd->port?tpd->port:"(none)",
-                  tpd->nonce?tpd->nonce:"(none)"
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s nonce=%s",
+                      tpd->nodehost?tpd->nodehost:"(none)",
+                      tpd->nodeport?tpd->nodeport:"(none)",
+                      tpd->host?tpd->host:"(none)",
+                      tpd->port?tpd->port:"(none)",
+                      tpd->nonce?tpd->nonce:"(none)"
             );
         return APR_BADARG;
     }
@@ -450,7 +448,7 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
     char *tohash =
         apr_psprintf(mp, "%s %s %s %s %s", tpd->key, tpd->nodehost, tpd->nodeport, tpd->secret, tpd->nonce);
 
-    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_do_authenticate: Data to hash is '%s'", tohash);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: Data to hash is '%s'", tohash);
     
     char hashdata[32];
     apr_crypto_hash_t *h = apr_crypto_sha256_new(mp);
@@ -470,15 +468,15 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
                                     tpd->key, tpd->nodehost, tpd->nodeport, hash);
 
     if (!tpd->initialdata) {
-        APACHELOG(APLOG_ERR, r,
-                  "tcp_proxy_send_initial_data: could not generate initial data");
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
+		      "tcp_proxy_send_initial_data: could not generate initial data");
         return APR_BADARG;
     }
 
     len = strlen(tpd->initialdata);
-    APACHELOG(APLOG_DEBUG, r,
-              "tcp_proxy_send_initial_data: initial data is '%s'",
-              tpd->initialdata);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_send_initial_data: initial data is '%s'",
+                  tpd->initialdata);
 
     header.magic = htonl(VNCHEADERMAGIC);
     header.version = htons(1);
@@ -514,9 +512,9 @@ static apr_status_t tcp_proxy_do_tcp_connect(request_rec * r,
     apr_socket_t *s;
     apr_status_t rv;
 
-    APACHELOG(APLOG_DEBUG, r,
-              "tcp_proxy_do_tcp_connect: connect to host %s port %s",
-              tpd->host, tpd->port);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_do_tcp_connect: connect to host %s port %s",
+                  tpd->host, tpd->port);
 
     int port = atoi(tpd->port);
     rv = apr_sockaddr_info_get(&sa, tpd->host, APR_INET, port, 0, mp);
@@ -542,16 +540,16 @@ static apr_status_t tcp_proxy_do_tcp_connect(request_rec * r,
         apr_sockaddr_t *localsa;
         rv = apr_sockaddr_info_get(&localsa, tpd->localip, APR_UNSPEC, 0 /*port*/, 0, mp);
         if (rv != APR_SUCCESS) {
-            APACHELOG(APLOG_DEBUG, r,
-                      "tcp_proxy_do_tcp_connect: could not get addr to bind to local address %s",
-                      tpd->localip);
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                          "tcp_proxy_do_tcp_connect: could not get addr to bind to local address %s",
+                          tpd->localip);
             apr_socket_close(s);
             return rv;
         }       
         if ((rv = apr_socket_bind(s, localsa)) != APR_SUCCESS) {
-            APACHELOG(APLOG_DEBUG, r,
-                      "tcp_proxy_do_tcp_connect: could not bind to local address %s",
-                      tpd->localip);
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                          "tcp_proxy_do_tcp_connect: could not bind to local address %s",
+                          tpd->localip);
             apr_socket_close(s);
             return rv;
         }
@@ -586,7 +584,7 @@ void guacdump (request_rec * r, char * msg, char * buf, size_t start, size_t end
     if (b) {
         memcpy(b, buf+start, s-1);
         b[s-1]=0;
-        APACHELOG(APLOG_DEBUG, r, "%s: '%s'", msg, b);
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "%s: '%s'", msg, b);
         free (b);
     }
 }
@@ -608,7 +606,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
     if (!tpd->guacamole) {
         /* Non-guacamole mode - buffer as much as we can */
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run start");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run start");
 
 #define WSTCPBUFSIZ 16384
 #define WSTCPCBUFSIZ ((WSTCPBUFSIZ*4/3)+5)
@@ -630,8 +628,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
             rv = apr_pollset_poll(tpd->recvpollset, got?1000:timeout, &num, &ret_pfd);
 
             if (!(tpd->active && tpd->tcpsocket)) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run quitting as connection has been marked inactive");
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_run quitting as connection has been marked inactive");
                 break;
             }
 
@@ -644,11 +642,11 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
                 if (rv == APR_SUCCESS) {
                     /* Poll returned success, but no descriptors were ready. Very odd */
-                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: sleeping 2");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping 2");
                     usleep(10000);      /* this should not happen */
                 }
 
-                APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: poll returned an error");
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: poll returned an error");
                 break;
             }
 
@@ -675,9 +673,9 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                     tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT /* FIXME */ ,
                                       (unsigned char *) wbuf, towrite);
                 if (written != towrite) {
-                    APACHELOG(APLOG_DEBUG, r,
-                              "tcp_proxy_run send failed, wrote %lu bytes of %lu",
-                              (unsigned long) written, (unsigned long) got);
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                 "tcp_proxy_run send failed, wrote %lu bytes of %lu",
+                                 (unsigned long) written, (unsigned long) got);
                     break;
                 }
                 got=0;
@@ -693,7 +691,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                      * to be conditions where this happens in a circumstance where a repeat
                      * read produces the same error, so sleep so we don't busy-wait CPU
                      */
-                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: sleeping");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping");
                     usleep(10000);      /* this should not happen */
                 }
                 continue;
@@ -701,9 +699,9 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 
             char s[1024];
             apr_strerror(rv, s, sizeof(s));
-            APACHELOG(APLOG_DEBUG, r,
-                      "tcp_proxy_run apr_socket_recv failed len=%lu rv=%d, %s",
-                      (unsigned long) len, rv, s);
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                         "tcp_proxy_run apr_socket_recv failed len=%lu rv=%d, %s",
+                         (unsigned long) len, rv, s);
             
             break;
         }
@@ -711,7 +709,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
         tcp_proxy_shutdown_socket(tpd);
         tpd->server->close(tpd->server);
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run stop");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run stop");
 
     } else {
 
@@ -762,14 +760,14 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
         char * buf = NULL;
 
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run start guacamole mode");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run start guacamole mode");
 
         /* Keep sending messages as long as the connection is active */
         while (tpd->active && tpd->tcpsocket) {
 
             if ((bufreadp > bufsize) || (bufwritep > bufreadp)) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run guacamole pointer error, buf=%lx bufsize=%lu bufreadp=%lu bufwritep=%lu", (intptr_t)buf, bufsize, bufreadp, bufwritep);
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_run guacamole pointer error, buf=%lx bufsize=%lu bufreadp=%lu bufwritep=%lu", (intptr_t)buf, bufsize, bufreadp, bufwritep);
                 goto guacerror;
             }
                 
@@ -800,8 +798,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 if (bufwritep > 0) {
                     char * newbuf = malloc(bufsize + GUARDBYTES);
                     if (!newbuf) {
-                        APACHELOG(APLOG_DEBUG, r,
-                                  "tcp_proxy_run could not allocate guacamole buffer");
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                     "tcp_proxy_run could not allocate guacamole buffer");
                         goto guacerror;
                     }
                     if (buf && (bufreadp > bufwritep))
@@ -828,19 +826,19 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                         newbufsize = bufreadp + minread; /* Note this is how the initial size is set */
                     if ((newbufsize > maxbufsize) || (newbufsize < bufsize))
                         {
-                            APACHELOG(APLOG_DEBUG, r,
-                                      "tcp_proxy_run guacamole buffer grew to illegal size");
+                            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                         "tcp_proxy_run guacamole buffer grew to illegal size");
                             goto guacerror;
                         }
 		    /*
-                    APACHELOG(APLOG_DEBUG, r,
-                              "tcp_proxy_run expanding guacamole buffer to %lu bytes", newbufsize);
+                      ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                      "tcp_proxy_run expanding guacamole buffer to %lu bytes", newbufsize);
 		    */
                     char * newbuf = realloc (buf, newbufsize + GUARDBYTES); /* realloc when buf in NULL is a malloc */
                     if (!newbuf) {
                         /* remember to free buf */
-                        APACHELOG(APLOG_DEBUG, r,
-                                  "tcp_proxy_run could not reallocate guacamole buffer");
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                     "tcp_proxy_run could not reallocate guacamole buffer");
                         goto guacerror;
                     }
                     buf = newbuf;
@@ -850,8 +848,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
             /* Check we now have a buffer and sace to read into - this should always be the case */
             if (!buf || (bufsize-bufreadp < minread)) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run guacamole logic error, buf=%lx bufsize=%lu bufread=%lu minread=%lu", (intptr_t)buf, bufsize, bufreadp, minread);
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_run guacamole logic error, buf=%lx bufsize=%lu bufread=%lu minread=%lu", (intptr_t)buf, bufsize, bufreadp, minread);
                 goto guacerror;
             }
 
@@ -868,40 +866,40 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 rv = apr_pollset_poll(tpd->recvpollset, timeout, &num, &ret_pfd);
                 
                 if (!(tpd->active && tpd->tcpsocket)) {
-                    APACHELOG(APLOG_DEBUG, r,
-                              "tcp_proxy_run quitting guacamole mode as connection has been marked inactive");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                 "tcp_proxy_run quitting guacamole mode as connection has been marked inactive");
                     goto guacdone;
                 }
                 
                 if (APR_STATUS_IS_TIMEUP(rv)) {
-                    APACHELOG(APLOG_DEBUG, r,
-                              "tcp_proxy_run quitting guacamole mode as ws poll has timed out");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                 "tcp_proxy_run quitting guacamole mode as ws poll has timed out");
                     goto guacdone;
                 }
 
                 if (rv != APR_SUCCESS) {
-                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: poll returned an error");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: poll returned an error");
                     goto guacerror;
                 }
 
                 if (num<=0) {
                     /* Poll returned success, but no descriptors were ready. Very odd */
-                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: sleeping guac 2");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping guac 2");
                     usleep(10000);      /* this should not happen */
                     continue;
                 }
 
                 rv = apr_socket_recv(tpd->tcpsocket, buf+bufreadp, &len);
                 if (APR_STATUS_IS_EAGAIN(rv)) { /* we have no data to read yet, we should try rereading */
-                    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: sleeping guac 3");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping guac 3");
                     usleep(10000);
                     continue;
                 }
 
                 if (APR_STATUS_IS_EOF(rv) || !len) {
                     /* we lost the TCP session */
-                    APACHELOG(APLOG_DEBUG, r,
-                              "tcp_proxy_run quitting guacamole mode as TCP connection closed");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                 "tcp_proxy_run quitting guacamole mode as TCP connection closed");
                     goto guacdone;
                 }
 
@@ -912,8 +910,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
             bufreadp += len;
 
 	    /*
-            APACHELOG(APLOG_DEBUG, r,
-		      "tcp_proxy_run ***guac read bytes len=%lu bufwrirep=%lu bufreadpp=%lu", len, bufreadp, bufwritep);
+              ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+              "tcp_proxy_run ***guac read bytes len=%lu bufwrirep=%lu bufreadpp=%lu", len, bufreadp, bufwritep);
 	    */
 
             /* So now we have an instruction starting at bufwritep, and terminating either before
@@ -927,11 +925,11 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 /* Skip along until we find a semicolon */
                 int write=0;
                 while (!write) {
-		  /*
-                    APACHELOG(APLOG_DEBUG, r,
-                              "tcp_proxy_run ***guac decode loop p=%lu bufwrirep=%lu bufreadpp=%lu", p, bufreadp, bufwritep);
-                    guacdump(r, "tcp_proxy_run ***guac string is", buf, p, bufreadp);
-		  */
+                    /*
+                      ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                      "tcp_proxy_run ***guac decode loop p=%lu bufwrirep=%lu bufreadpp=%lu", p, bufreadp, bufwritep);
+                      guacdump(r, "tcp_proxy_run ***guac string is", buf, p, bufreadp);
+                    */
 
                     if (p >= bufreadp)
                         goto readmore;
@@ -945,8 +943,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                      * to the dot
                      */
                     if (!arglen || (buf[p] != '.')) {
-                        APACHELOG(LOG_DEBUG, r,
-                                  "tcp_proxy_run bad guacamole length");
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                     "tcp_proxy_run bad guacamole length");
                         goto guacerror;
                     }
                     /* So, consider, to step to the comma we need to add arglen+1
@@ -964,8 +962,8 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                         write = 1;
                         break;
                     default:
-                        APACHELOG(LOG_DEBUG, r,
-                                  "tcp_proxy_run bad guacamole terminator");
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                     "tcp_proxy_run bad guacamole terminator");
                         goto guacerror;
                         break;
                     }
@@ -977,13 +975,13 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
                 size_t towrite = p - bufwritep;
 		/*
-		APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run ***guac writing %lu bytes", towrite);
+                  ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                  "tcp_proxy_run ***guac writing %lu bytes", towrite);
 		*/
 
 		if (towrite <= 0) {
-                    APACHELOG(APLOG_DEBUG, r,
-			      "tcp_proxy_run guacamole logic error: zero length instruction");
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                 "tcp_proxy_run guacamole logic error: zero length instruction");
 		    goto guacerror;
 		}
 
@@ -991,9 +989,9 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                     tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT,
                                       (unsigned char *) (buf + bufwritep), towrite);
                 if (written != towrite) {
-                    APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run guacamole send failed, wrote %lu bytes of %lu",
-                          (unsigned long) written, (unsigned long) len);
+                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                 "tcp_proxy_run guacamole send failed, wrote %lu bytes of %lu",
+                                 (unsigned long) written, (unsigned long) len);
                     goto guacerror;
                 }
 
@@ -1007,10 +1005,10 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
         }
 
       guacdone:
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run stop guacamole mode");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run stop guacamole mode");
       guacerror:
 	if (buf)
-	  free (buf);
+            free (buf);
         tcp_proxy_shutdown_socket(tpd);
         tpd->server->close(tpd->server);
         return NULL;
@@ -1062,8 +1060,8 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
             }
           fail:
             if (!towrite) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_on_message: apr_base64_decode_binary failed");
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                              "tcp_proxy_on_message: apr_base64_decode_binary failed");
                 tcp_proxy_shutdown_socket(tpd);
                 tpd->server->close(tpd->server);
                 return 0;
@@ -1078,8 +1076,8 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
         while (l>0) {
 
             if (!(tpd->active && tpd->tcpsocket)) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_on_message quitting as connection has been marked inactive");
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                              "tcp_proxy_on_message quitting as connection has been marked inactive");
                 rv = APR_BADARG;
                 break;
             }
@@ -1103,7 +1101,7 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
                 if (rv == APR_SUCCESS) {
                     if (!lw) {
                         /* check for success, but successfully wrote nothing */
-                        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_on_message: sleeping");
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_message: sleeping");
                         usleep(10000);      /* this should not happen */
                     }
                     continue;
@@ -1122,7 +1120,7 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
                 /* Hmmm... we polled, it said success (not timeout) but nothing was
                  * ready
                  */
-                APACHELOG(APLOG_DEBUG, r, "tcp_proxy_on_message: sleeping 2");
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_message: sleeping 2");
                 usleep(10000);      /* this should not happen */
                 continue;
             }
@@ -1137,9 +1135,9 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
         if (rv != APR_SUCCESS) {
             char s[1024];
             apr_strerror(rv, s, sizeof(s));
-            APACHELOG(APLOG_DEBUG, r,
-                      "tcp_proxy_on_message: apr_socket_send failed, rv=%d, sent=%lu, %s",
-                      rv, (unsigned long) len, s);
+            ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                          "tcp_proxy_on_message: apr_socket_send failed, rv=%d, sent=%lu, %s",
+                          rv, (unsigned long) len, s);
             tcp_proxy_shutdown_socket(tpd);
             tpd->server->close(tpd->server);
             return 0;
@@ -1157,7 +1155,7 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
         /* Get access to the request_rec strucure for this connection */
         request_rec *r = server->request(server);
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_on_connect starting");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect starting");
 
         if (r != NULL) {
 
@@ -1189,8 +1187,8 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
             if ((i < count) &&
                 (apr_pool_create(&pool, r->pool) == APR_SUCCESS)) {
 
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_on_connect protocol correct");
+                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                              "tcp_proxy_on_connect protocol correct");
 
                 /* Allocate memory to hold the tcp proxy state */
                 if ((tpd =
@@ -1236,13 +1234,13 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
                             tpd->secret = apr_pstrdup(pool, conf->secret);
                         if (conf->localip)
                             tpd->localip = apr_pstrdup(pool, conf->localip);
-                        APACHELOG(APLOG_DEBUG, r,
-                                  "tcp_proxy_on_connect: base64 is %d",
-                                  conf->base64);
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                                      "tcp_proxy_on_connect: base64 is %d",
+                                      conf->base64);
                     }
                     else {
-                        APACHELOG(APLOG_DEBUG, r,
-                                  "tcp_proxy_on_connect: no config");
+                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                                      "tcp_proxy_on_connect: no config");
                     }
 
                     /* Check we can authenticate the incoming user (this is a hook for others to add to)
@@ -1306,7 +1304,7 @@ void CALLBACK tcp_proxy_on_disconnect(void *plugin_private,
     TcpProxyData *tpd = (TcpProxyData *) plugin_private;
 
     request_rec *r = server->request(server);
-    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_on_disconnect");
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_disconnect");
 
     if (tpd != 0) {
         /* When disconnecting, inform the thread that it is time to stop */
@@ -1358,7 +1356,7 @@ static const char *mod_websocket_tcp_proxy_conf_base64(cmd_parms * cmd,
 }
 
 static const char *mod_websocket_tcp_proxy_conf_guacamole(cmd_parms * cmd,
-                                                       void *config, int flag)
+                                                          void *config, int flag)
 {
     websocket_tcp_proxy_config_rec *cfg =
         (websocket_tcp_proxy_config_rec *) config;
