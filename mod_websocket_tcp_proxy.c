@@ -27,8 +27,6 @@
 
 #include "websocket_plugin.h"
 
-#define APACHELOG(severity, handle, message...) ap_log_error(APLOG_MARK, APLOG_NOERRNO | severity, 0, handle->server, message)
-
 module AP_MODULE_DECLARE_DATA websocket_tcp_proxy_module;
 
 typedef struct
@@ -104,9 +102,9 @@ static apr_status_t tcp_proxy_do_tcp_connect(request_rec * r,
     apr_socket_t *s;
     apr_status_t rv;
 
-    APACHELOG(APLOG_DEBUG, r,
-              "tcp_proxy_do_tcp_connect: connect to host %s port %s",
-              tpd->host, tpd->port);
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                 "tcp_proxy_do_tcp_connect: connect to host %s port %s",
+                 tpd->host, tpd->port);
 
     int port = atoi(tpd->port);
     rv = apr_sockaddr_info_get(&sa, tpd->host, APR_INET, port, 0, mp);
@@ -162,7 +160,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
     if (tpd != NULL) {
         request_rec *r = (tpd->server)->request(tpd->server);
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run start");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run start");
 
         /* Keep sending messages as long as the connection is active */
         while (tpd->active && tpd->tcpsocket) {
@@ -182,9 +180,9 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
             if (len == 0 || ((rv != APR_SUCCESS) && !APR_STATUS_IS_EOF(rv))) {
                 char s[1024];
                 apr_strerror(rv, s, sizeof(s));
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run apr_socket_recv failed len=%lu rv=%d, %s",
-                          (unsigned long) len, rv, s);
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_run apr_socket_recv failed len=%lu rv=%d, %s",
+                             (unsigned long) len, rv, s);
                 tcp_proxy_shutdown_socket(tpd);
                 tpd->server->close(tpd->server);
                 break;
@@ -204,16 +202,16 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT /* FIXME */ ,
                                   (unsigned char *) wbuf, towrite);
             if (written != towrite) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_run send failed, wrote %lu bytes of %lu",
-                          (unsigned long) written, (unsigned long) len);
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_run send failed, wrote %lu bytes of %lu",
+                             (unsigned long) written, (unsigned long) len);
                 tcp_proxy_shutdown_socket(tpd);
                 tpd->server->close(tpd->server);
                 break;
             }
         }
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run stop");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run stop");
 
     }
     return NULL;
@@ -258,8 +256,8 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
             }
           fail:
             if (!towrite) {
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_on_message: apr_base64_decode_binary failed");
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_on_message: apr_base64_decode_binary failed");
                 tcp_proxy_shutdown_socket(tpd);
                 tpd->server->close(tpd->server);
                 return 0;
@@ -273,9 +271,9 @@ static size_t CALLBACK tcp_proxy_on_message(void *plugin_private,
         if (rv != APR_SUCCESS) {
             char s[1024];
             apr_strerror(rv, s, sizeof(s));
-            APACHELOG(APLOG_DEBUG, r,
-                      "tcp_proxy_on_message: apr_socket_send failed, rv=%d, sent=%lu, %s",
-                      rv, (unsigned long) len, s);
+            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                         "tcp_proxy_on_message: apr_socket_send failed, rv=%d, sent=%lu, %s",
+                         rv, (unsigned long) len, s);
             tcp_proxy_shutdown_socket(tpd);
             tpd->server->close(tpd->server);
             return 0;
@@ -298,7 +296,7 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
         /* Get access to the request_rec strucure for this connection */
         request_rec *r = server->request(server);
 
-        APACHELOG(APLOG_DEBUG, r, "tcp_proxy_on_connect starting");
+        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_on_connect starting");
 
         if (r != NULL) {
 
@@ -330,8 +328,8 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
             if ((i < count) &&
                 (apr_pool_create(&pool, r->pool) == APR_SUCCESS)) {
 
-                APACHELOG(APLOG_DEBUG, r,
-                          "tcp_proxy_on_connect protocol correct");
+                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                             "tcp_proxy_on_connect protocol correct");
 
                 /* Allocate memory to hold the tcp proxy state */
                 if ((tpd =
@@ -363,13 +361,13 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
                             tpd->host = apr_pstrdup(pool, conf->host);
                         if (conf->port)
                             tpd->port = apr_pstrdup(pool, conf->port);
-                        APACHELOG(APLOG_DEBUG, r,
-                                  "tcp_proxy_on_connect: base64 is %d",
-                                  conf->base64);
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                     "tcp_proxy_on_connect: base64 is %d",
+                                     conf->base64);
                     }
                     else {
-                        APACHELOG(APLOG_DEBUG, r,
-                                  "tcp_proxy_on_connect: no config");
+                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                                     "tcp_proxy_on_connect: no config");
                     }
 
                     /* Check we can authenticate the incoming user (this is a hook for others to add to)
@@ -418,7 +416,7 @@ void CALLBACK tcp_proxy_on_disconnect(void *plugin_private,
     TcpProxyData *tpd = (TcpProxyData *) plugin_private;
 
     request_rec *r = server->request(server);
-    APACHELOG(APLOG_DEBUG, r, "tcp_proxy_on_disconnect");
+    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_on_disconnect");
 
     if (tpd != 0) {
         /* When disconnecting, inform the thread that it is time to stop */
