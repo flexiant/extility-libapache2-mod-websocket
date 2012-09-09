@@ -472,8 +472,24 @@ static void mod_websocket_data_framing(const WebSocketServer *server,
 {
     WebSocketState *state = server->state;
     request_rec *r = state->r;
+
+    /* We cannot use the same bucket allocator for the ouput bucket brigade
+     * obb as the one associated with the connection (r->connection->bucket_alloc)
+     * because the same bucket allocator cannot be used in two different
+     * threads, and we use the connection bucket allocator in this
+     * thread - see docs on apr_bucket_alloc_create(). This results in
+     * occasional core dumps. So create our own bucket allocator and pool
+     * for output thread bucket brigade.
+     */
+
+    apr_pool_t *opool = NULL;
+    if (apr_pool_create(&opool, r->pool) != APR_SUCCESS)
+        return;
+    apr_bucket_alloc_t *oallocator = apr_bucket_alloc_create(opool);
+    if (!oallocator)
+        return;
     apr_bucket_brigade *obb =
-        apr_brigade_create(r->pool, r->connection->bucket_alloc);
+        apr_brigade_create(opool, oallocator);
 
     if (obb != NULL) {
         unsigned char block[BLOCK_DATA_SIZE];
