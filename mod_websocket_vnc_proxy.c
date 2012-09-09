@@ -18,8 +18,16 @@
  */
 
 /*
- * The system allows for dyanmic configuration of vnc port forwards looked
- * up by an arbitrary key. The key can be composed of any base64 letters plus
+ * The system OPTIONALLY allows for use with an intermediate proxy (referred
+ * to as the 'cluster') which will forward the onbound connection to its
+ * ultimate destination (referred to as the 'node'). This feature is
+ * activated by the WebSocketTcpProxySendInitialData directive, so called
+ * as the outbound session has initial data added which is a cryptographically
+ * signed instruction to the cluster proxy as to where to forward the
+ * onbound TCP session.
+ *
+ * The system OPTIONALLY allows for dyanmic configuration of vnc port forwards looked
+ * up with an arbitrary key. The key can be composed of any base64 letters plus
  * underscores and minus sigs. 
  *
  * The user can specify a statement (likely to be SELECT
@@ -604,6 +612,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
 #define WSTCPBUFSIZ 16384
 #define WSTCPCBUFSIZ ((WSTCPBUFSIZ*4/3)+5)
+#define GUARDBYTES 64
         char buf[WSTCPBUFSIZ];
         char cbuf[WSTCPCBUFSIZ];
         apr_size_t got=0;
@@ -758,6 +767,12 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
         /* Keep sending messages as long as the connection is active */
         while (tpd->active && tpd->tcpsocket) {
 
+            if ((bufreadp > bufsize) || (bufwritep > bufreadp)) {
+                APACHELOG(APLOG_DEBUG, r,
+                          "tcp_proxy_run guacamole pointer error, buf=%lx bufsize=%lu bufreadp=%lu bufwritep=%lu", (intptr_t)buf, bufsize, bufreadp, bufwritep);
+                goto guacerror;
+            }
+                
             /* First let's see if we've got a completely empty buffer */
             if (bufreadp == bufwritep) {
                 /* If so, junk all the data written to the websocket without
@@ -783,7 +798,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                  * reallocate and expunge that first
                  */
                 if (bufwritep > 0) {
-                    char * newbuf = malloc(bufsize);
+                    char * newbuf = malloc(bufsize + GUARDBYTES);
                     if (!newbuf) {
                         APACHELOG(APLOG_DEBUG, r,
                                   "tcp_proxy_run could not allocate guacamole buffer");
@@ -811,15 +826,17 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                         newbufsize = maxbufsize; /* but don't make it larger than the maximum */
                     if (newbufsize < bufreadp + minread) /* Make it large enough for the read we need */
                         newbufsize = bufreadp + minread; /* Note this is how the initial size is set */
-                    if (newbufsize > maxbufsize)
+                    if ((newbufsize > maxbufsize) || (newbufsize < bufsize))
                         {
                             APACHELOG(APLOG_DEBUG, r,
                                       "tcp_proxy_run guacamole buffer grew to illegal size");
                             goto guacerror;
                         }
+		    /*
                     APACHELOG(APLOG_DEBUG, r,
                               "tcp_proxy_run expanding guacamole buffer to %lu bytes", newbufsize);
-                    char * newbuf = realloc (buf, newbufsize); /* realloc when buf in NULL is a malloc */
+		    */
+                    char * newbuf = realloc (buf, newbufsize + GUARDBYTES); /* realloc when buf in NULL is a malloc */
                     if (!newbuf) {
                         /* remember to free buf */
                         APACHELOG(APLOG_DEBUG, r,
@@ -848,9 +865,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 apr_int32_t num = 0;
                 apr_status_t rv;
                 
-                /* FIXME: implement timeout through gettimeofday */
-
-                rv = apr_pollset_poll(tpd->recvpollset, APR_USEC_PER_SEC, &num, &ret_pfd);
+                rv = apr_pollset_poll(tpd->recvpollset, timeout, &num, &ret_pfd);
                 
                 if (!(tpd->active && tpd->tcpsocket)) {
                     APACHELOG(APLOG_DEBUG, r,
@@ -858,8 +873,11 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                     goto guacdone;
                 }
                 
-                if (APR_STATUS_IS_TIMEUP(rv))
-                    continue;
+                if (APR_STATUS_IS_TIMEUP(rv)) {
+                    APACHELOG(APLOG_DEBUG, r,
+                              "tcp_proxy_run quitting guacamole mode as ws poll has timed out");
+                    goto guacdone;
+                }
 
                 if (rv != APR_SUCCESS) {
                     APACHELOG(APLOG_DEBUG, r, "tcp_proxy_run: poll returned an error");
@@ -962,6 +980,13 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 		APACHELOG(APLOG_DEBUG, r,
                           "tcp_proxy_run ***guac writing %lu bytes", towrite);
 		*/
+
+		if (towrite <= 0) {
+                    APACHELOG(APLOG_DEBUG, r,
+			      "tcp_proxy_run guacamole logic error: zero length instruction");
+		    goto guacerror;
+		}
+
                 size_t written =
                     tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT,
                                       (unsigned char *) (buf + bufwritep), towrite);
@@ -1236,8 +1261,8 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
                         apr_socket_opt_set(tpd->tcpsocket, APR_SO_KEEPALIVE, 1);
                         apr_socket_timeout_set(tpd->tcpsocket, 0);
 
-                        apr_pollset_create (&tpd->recvpollset, 32, r->pool, APR_POLLSET_THREADSAFE);
-                        apr_pollfd_t recvpfd = { r->pool, APR_POLL_SOCKET, APR_POLLIN, 0, { NULL }, NULL };
+                        apr_pollset_create (&tpd->recvpollset, 32, pool, APR_POLLSET_THREADSAFE);
+                        apr_pollfd_t recvpfd = { pool, APR_POLL_SOCKET, APR_POLLIN, 0, { NULL }, NULL };
                         recvpfd.desc.s = tpd->tcpsocket;
                         apr_pollset_add(tpd->recvpollset, &recvpfd);
 
