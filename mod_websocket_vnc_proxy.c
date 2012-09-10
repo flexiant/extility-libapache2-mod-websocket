@@ -18,12 +18,35 @@
  */
 
 /*
+ * This apache module is a general purpose tcp proxy for apache
+ * designed to work with libwebsockets. However, it has various
+ * optimisations for vnc connections. The service to which it connects
+ * can either be defined in a static manner, or can be looked up in
+ * a database. The service also supports connecting to an intermediate
+ * secondary proxy.
+ *
+ * Intermediate secondary proxy
+ * ============================
+ *
  * The system OPTIONALLY allows for use with an intermediate proxy
  * which will forward the onbound connection to its ultimate destination
  * This feature is activated by the WebSocketTcpProxySendInitialData directive,
  * so called as the outbound session has initial data added which is a cryptographically
  * signed instruction to the cluster proxy as to where to forward the
  * onbound TCP session.
+ *
+ * The data sent consists of an XML object containing:
+ * - the session key (or a generated one if there is none)
+ * - a parameter block (if database access is set up) consisting of all the data
+ *   supplied by the database search using the fiels names and values supplied therein
+ * - a hash of the session key, the parameter block, a nonce supplied by
+ *   the secondary proxy, and a shared secret.
+ *
+ * The hash allows the secondary proxy to verify that the incoming connection
+ * has been supplied by a person in posession of the shared secret.
+ *
+ * Database lookups
+ * ================
  *
  * The system OPTIONALLY allows for dyanmic configuration of vnc port forwards looked
  * up with an arbitrary key. The key can be composed of any base64 letters plus
@@ -46,8 +69,8 @@
  * row is returned, the first row will be used to connect to.
  *
  * Columns returned should be
- *     * the IP address to connect to (host)
- *     * the port numebr to connect to (port)
+ *     * the IP address to connect to (connecthost)
+ *     * the port numebr to connect to (connectport)
  *     * Any other columns you want sent in the initial data
  *
  * For example, if the table 'vnc' contained columns vncnodehost, vncnodeport
@@ -56,7 +79,7 @@
  * the following query might be used:
  *
  *     SELECT vncnodehost AS 'nodehost', vncnodeport AS 'nodeport',
- *            vncclusterhost AS 'host', vncclusterport AS 'port'
+ *            vncclusterhost AS 'connecthost', vncclusterport AS 'connectport'
  *            FROM vnc WHERE vnckey='%s'
  *
  * In which case the initial data would include entries for
@@ -263,9 +286,9 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
                     
                     if (fieldvalue) {
                         apr_hash_set(tpd->paramhash, apr_pstrdup(mp, fieldname), APR_HASH_KEY_STRING, apr_pstrdup(mp, fieldvalue));
-                        if (!strcmp(fieldname, "host"))
+                        if (!strcmp(fieldname, "connecthost"))
                             host = apr_pstrdup(mp, fieldvalue);
-                        else if (!strcmp(fieldname, "port"))
+                        else if (!strcmp(fieldname, "connectport"))
                             port = apr_pstrdup(mp, fieldvalue);
                     }
                 }
@@ -331,6 +354,10 @@ static apr_status_t tcp_proxy_do_authenticate(request_rec * r,
         return APR_BADARG;
 
     tpd->key = tcp_proxy_get_key(r, tpd, mp);
+    if (!tpd->conf->query && !tpd->key) {
+        /* key is option if no query */
+        tpd->key = apr_pstrdup(r->pool, "");
+    }
     if (!tpd->key) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                       "tcp_proxy_do_authenticate: no key");
@@ -427,9 +454,10 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: read nonce of '%s'", tpd->nonce);
 
-    if (!(tpd->host && tpd->port && tpd->nonce)) {
+    if (!(tpd->key && tpd->host && tpd->port && tpd->nonce)) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                      "tcp_proxy_send_initial_data: missing parm host=%s port=%s nonce=%s",
+                      "tcp_proxy_send_initial_data: missing parm key=%s host=%s port=%s nonce=%s",
+                      tpd->key?tpd->key:"(none)",
                       tpd->host?tpd->host:"(none)",
                       tpd->port?tpd->port:"(none)",
                       tpd->nonce?tpd->nonce:"(none)"
