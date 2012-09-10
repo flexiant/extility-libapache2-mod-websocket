@@ -18,11 +18,10 @@
  */
 
 /*
- * The system OPTIONALLY allows for use with an intermediate proxy (referred
- * to as the 'cluster') which will forward the onbound connection to its
- * ultimate destination (referred to as the 'node'). This feature is
- * activated by the WebSocketTcpProxySendInitialData directive, so called
- * as the outbound session has initial data added which is a cryptographically
+ * The system OPTIONALLY allows for use with an intermediate proxy
+ * which will forward the onbound connection to its ultimate destination
+ * This feature is activated by the WebSocketTcpProxySendInitialData directive,
+ * so called as the outbound session has initial data added which is a cryptographically
  * signed instruction to the cluster proxy as to where to forward the
  * onbound TCP session.
  *
@@ -47,10 +46,9 @@
  * row is returned, the first row will be used to connect to.
  *
  * Columns returned should be
- *     * the node IP address to connect to - nodehost
- *     * and node port number - nodeport
- *     * the cluster proxy IP address - clusterhost
- *     * the cluster proxy port - cluster port
+ *     * the IP address to connect to (host)
+ *     * the port numebr to connect to (port)
+ *     * Any other columns you want sent in the initial data
  *
  * For example, if the table 'vnc' contained columns vncnodehost, vncnodeport
  * vncclusterhost, vncclusterport, and vncclusterkey,  corresponding to ip and port
@@ -58,8 +56,16 @@
  * the following query might be used:
  *
  *     SELECT vncnodehost AS 'nodehost', vncnodeport AS 'nodeport',
- *            vncclusterhost AS 'clusterhost', vncclusterport AS 'clusterport'
+ *            vncclusterhost AS 'host', vncclusterport AS 'port'
  *            FROM vnc WHERE vnckey='%s'
+ *
+ * In which case the initial data would include entries for
+ *   nodehost
+ *   nodeport
+ *   host
+ *   port
+ *
+ * The nonce sent from the intermediate proxy will be added.
  */
 
 #include <stdio.h>
@@ -72,6 +78,7 @@
 #include "apr_strings.h"
 #include "apr_dbd.h"
 #include "apr_random.h"
+#include "apr_xml.h"
 #include "mod_dbd.h"
 
 #include "websocket_plugin.h"
@@ -121,9 +128,8 @@ typedef struct _TcpProxyData
     char *initialdata;
     char *secret;
     char *key;
-    char *nodehost;
-    char *nodeport;
     char *nonce;
+    apr_hash_t * paramhash;
     apr_dbd_prepared_t *statement;
     websocket_tcp_proxy_config_rec *conf;
 } TcpProxyData;
@@ -237,54 +243,44 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
                       "tcp_proxy_query_key: found a matching line");
                 
         if (!found) {
-            char *nodehost = NULL;
-            char *nodeport = NULL;
-            char *clusterhost = NULL;
-            char *clusterport = NULL;
+            char *host = NULL;
+            char *port = NULL;
             const char *fieldname;
             int i = 0;
-            for (fieldname = apr_dbd_get_name(dbd->driver, res, i);
-                 fieldname != NULL;
-                 fieldname = apr_dbd_get_name(dbd->driver, res, i)) {
-                
-                const char *fieldvalue = apr_dbd_get_entry(dbd->driver, row, i++);
 
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                              "tcp_proxy_query_key: found field '%s'='%s'",
-                              fieldname,
-                              fieldvalue);
-                
-                if (fieldvalue) {
-                    if (!strcmp(fieldname, "nodehost"))
-                        nodehost = apr_pstrdup(mp, fieldvalue);
-                    else if (!strcmp(fieldname, "nodeport"))
-                        nodeport = apr_pstrdup(mp, fieldvalue);
-                    else if (!strcmp(fieldname, "clusterhost"))
-                        clusterhost = apr_pstrdup(mp, fieldvalue);
-                    else if (!strcmp(fieldname, "clusterport"))
-                        clusterport = apr_pstrdup(mp, fieldvalue);
+            if (NULL != (tpd->paramhash = apr_hash_make(mp))) {
+
+                for (fieldname = apr_dbd_get_name(dbd->driver, res, i);
+                     fieldname != NULL;
+                     fieldname = apr_dbd_get_name(dbd->driver, res, i)) {
+                    
+                    const char *fieldvalue = apr_dbd_get_entry(dbd->driver, row, i++);
+                    
+                    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                                  "tcp_proxy_query_key: found field '%s'='%s'",
+                                  fieldname,
+                                  fieldvalue);
+                    
+                    if (fieldvalue) {
+                        apr_hash_set(tpd->paramhash, apr_pstrdup(mp, fieldname), APR_HASH_KEY_STRING, apr_pstrdup(mp, fieldvalue));
+                        if (!strcmp(fieldname, "host"))
+                            host = apr_pstrdup(mp, fieldvalue);
+                        else if (!strcmp(fieldname, "port"))
+                            port = apr_pstrdup(mp, fieldvalue);
+                    }
                 }
             }
-            if (clusterhost && clusterport) {
-                tpd->host = clusterhost;
-                tpd->port = clusterport;
-                if (nodehost)
-                    tpd->nodehost = nodehost;
-                if (nodeport)
-                    tpd->nodeport = nodeport;
+            if (tpd->paramhash && host && port) {
+                tpd->host = host;
+                tpd->port = port;
                 found = 1;
                 ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                              "tcp_proxy_query_key: found parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
-                              tpd->nodehost?tpd->nodehost:"(none)",
-                              tpd->nodeport?tpd->nodeport:"(none)",
+                              "tcp_proxy_query_key: found parm host=%s port=%s",
                               tpd->host?tpd->host:"(none)",
                               tpd->port?tpd->port:"(none)");
                 /* we can't break out here or row won't get cleaned up */
             }
-
         }
-
-        
     }
 
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
@@ -345,18 +341,16 @@ static apr_status_t tcp_proxy_do_authenticate(request_rec * r,
                   "tcp_proxy_do_authenticate: key is '%s'",
                   tpd->key);
 
-    /* Look up tpd->host, tpd->port, nodehost, nodeport using key */
+    /* Look up tpd->host, tpd->port, and other parameters using key */
     if (APR_SUCCESS != tcp_proxy_query_key(r, tpd, mp)) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                       "tcp_proxy_do_authenticate: query_key failed");
         return APR_BADARG;
     }
 
-    if (!( ((tpd->nodehost && tpd->nodeport) || !(tpd->sendinitialdata)) && tpd->host && tpd->port)) {
+    if (!(tpd->host && tpd->port)) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                      "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s",
-                      tpd->nodehost?tpd->nodehost:"(none)",
-                      tpd->nodeport?tpd->nodeport:"(none)",
+                      "tcp_proxy_do_authenticate: missing parm host=%s port=%s",
                       tpd->host?tpd->host:"(none)",
                       tpd->port?tpd->port:"(none)"
             );
@@ -387,24 +381,24 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
         return rv;
 
     if (hlen != sizeof (vncheader)) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: could not read whole header");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: could not read whole header");
         return APR_BADARG;
     }
 
     if (ntohl (header.magic) != VNCGREETINGMAGIC) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: bad magic");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: bad magic");
         return APR_BADARG;
     }
 
     if (ntohs (header.version) != 1) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: bad version");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: bad version");
         return APR_BADARG;
     }
 
     len = ntohs (header.length);
 
     if (len>1024) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: bad length");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: bad length");
         return APR_BADARG;
     }
 
@@ -418,7 +412,7 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
         return rv;
 
     if (len != ntohs (header.length)) {
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: could not read whole header (2)");
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: could not read whole header (2)");
         return APR_BADARG;
     }
 
@@ -431,13 +425,11 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
         }
     }
 
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: read nonce of '%s'", tpd->nonce);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: read nonce of '%s'", tpd->nonce);
 
-    if (!(tpd->nodehost && tpd->nodeport && tpd->host && tpd->port && tpd->nonce)) {
+    if (!(tpd->host && tpd->port && tpd->nonce)) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                      "tcp_proxy_do_authenticate: missing parm nodehost=%s nodeport=%s, clusterhost=%s clusterport=%s nonce=%s",
-                      tpd->nodehost?tpd->nodehost:"(none)",
-                      tpd->nodeport?tpd->nodeport:"(none)",
+                      "tcp_proxy_send_initial_data: missing parm host=%s port=%s nonce=%s",
                       tpd->host?tpd->host:"(none)",
                       tpd->port?tpd->port:"(none)",
                       tpd->nonce?tpd->nonce:"(none)"
@@ -446,9 +438,25 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
     }
 
     char *tohash =
-        apr_psprintf(mp, "%s %s %s %s %s", tpd->key, tpd->nodehost, tpd->nodeport, tpd->secret, tpd->nonce);
+        apr_psprintf(mp, "%s %s %s", tpd->key, tpd->secret, tpd->nonce);
 
-    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_do_authenticate: Data to hash is '%s'", tohash);
+    char *params = apr_pstrdup(mp, "");
+
+    if (tpd->paramhash) {
+        apr_hash_index_t *hi;
+        for (hi = apr_hash_first(mp, tpd->paramhash); hi; hi = apr_hash_next(hi)) {
+            char * key = NULL;
+            char * value = NULL;;
+            apr_hash_this(hi, (const void **)&key, NULL, (void **)&value);
+            if (key && value) {
+                tohash = apr_psprintf(mp, "%s %s %s", tohash, key, value);
+                const char * quotedstring = apr_xml_quote_string(mp, value, 0);
+                params = apr_psprintf(mp, "%s<%s>%s</%s>", params, key, quotedstring, key);
+            }
+        }
+    }
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_send_initial_data: Data to hash is '%s'", tohash);
     
     char hashdata[32];
     apr_crypto_hash_t *h = apr_crypto_sha256_new(mp);
@@ -463,9 +471,9 @@ static apr_status_t tcp_proxy_send_initial_data(request_rec * r,
     hash[32*2]=0;
 
     tpd->initialdata = apr_psprintf(mp, "<vncconnection>"
-                                    "<key>%s</key><node>%s</node><port>%s</port><hash>%s</hash>"
+                                    "<key>%s</key><hash>%s</hash><params>%s</params>"
                                     "</vncconnection>",
-                                    tpd->key, tpd->nodehost, tpd->nodeport, hash);
+                                    tpd->key, hash, params);
 
     if (!tpd->initialdata) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
@@ -563,6 +571,9 @@ static apr_status_t tcp_proxy_do_tcp_connect(request_rec * r,
 
     rv = apr_socket_connect(s, sa);
     if (rv != APR_SUCCESS) {
+        ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
+                      "Cannot connect to host %s port %s",
+                      tpd->host, tpd->port);
         apr_socket_close(s);
         return rv;
     }
@@ -1216,8 +1227,7 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
                     tpd->recvpollset = NULL;
                     tpd->key = NULL;
                     tpd->conf = conf;
-                    tpd->nodehost = NULL;
-                    tpd->nodeport = NULL;
+                    tpd->paramhash = NULL;
                     tpd->statement = NULL;
                     tpd->localip = NULL;
                     
