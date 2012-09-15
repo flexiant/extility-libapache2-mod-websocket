@@ -529,13 +529,12 @@ static int mod_websocket_method_handler(request_rec *r)
                                     }
                                 }
 
-                                apr_thread_mutex_create(&state.mutex, APR_THREAD_MUTEX_DEFAULT, r->pool);
+                                apr_thread_mutex_create(&state.mutex, APR_THREAD_MUTEX_UNNESTED, r->pool);
                                 apr_thread_mutex_lock(state.mutex);
 
                                 /* If the plugin supplies an on_connect function, it must return non-null on success */
                                 if ((conf->plugin->on_connect == NULL) ||
                                     ((plugin_private = conf->plugin->on_connect(&server)) != NULL)) {
-                                    apr_bucket_brigade *obb = NULL;
 
                                     /* Now that the connection has been established, disable the socket timeout */
                                     apr_socket_timeout_set(ap_get_module_config(r->connection->conn_config, &core_module), -1);
@@ -548,12 +547,20 @@ static int mod_websocket_method_handler(request_rec *r)
                                     ap_send_interim_response(r, 1);
 
                                     /* Create the output bucket brigade */
+                                    apr_thread_mutex_t *oallocatormutex = NULL;
+                                    apr_allocator_t * oallocator = NULL;
                                     apr_pool_t *opool = NULL;
-                                    apr_bucket_alloc_t *oallocator = NULL;
-                                                                        
-                                    if ((apr_pool_create(&opool, r->pool) == APR_SUCCESS) &&
-                                        ( NULL != (oallocator = apr_bucket_alloc_create(opool))) &&
-                                        ( NULL != (obb = apr_brigade_create(opool, oallocator)))) {
+                                    apr_bucket_alloc_t *obucketallocator = NULL;
+                                    apr_bucket_brigade * obb;
+
+                                    if (
+                                        ( apr_thread_mutex_create(&oallocatormutex, APR_THREAD_MUTEX_UNNESTED, r->pool) == APR_SUCCESS) &&
+                                        ( apr_allocator_create(&oallocator) == APR_SUCCESS) &&
+                                        ( apr_allocator_mutex_set(oallocator, oallocatormutex), 1 ) &&
+                                        ( apr_pool_create_ex(&opool, NULL, NULL, oallocator) == APR_SUCCESS) && /* WARNING: pool has no parent */
+                                        ( NULL != (obucketallocator = apr_bucket_alloc_create(opool))) &&
+                                        ( NULL != (obb = apr_brigade_create(opool, obucketallocator)))
+                                        ) {
 
                                         unsigned char block[BLOCK_DATA_SIZE], *extended_data = NULL;
                                         apr_off_t extended_data_offset = 0;
@@ -709,7 +716,14 @@ static int mod_websocket_method_handler(request_rec *r)
                                         apr_thread_mutex_lock(state.mutex);
                                         state.obb = NULL;
 
-                                        apr_brigade_destroy(obb);
+                                        /* Destroy the pool (which does not have a parent) manually
+                                         * which will destroy (inter alia) the bucket brigade and
+                                         * bucket brigade allocator
+                                         */
+
+                                         apr_pool_destroy(opool);
+                                         apr_allocator_destroy(oallocator);
+                                         /* No need to destroy the mutex as that belongs to r->pool */
                                     }
                                     apr_thread_mutex_unlock(state.mutex);
 

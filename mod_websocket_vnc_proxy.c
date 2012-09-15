@@ -136,10 +136,11 @@ typedef struct _TcpProxyData
 {
     const WebSocketServer *server;
     apr_pool_t *pool;
+    apr_pool_t *threadpool;
+    apr_allocator_t *threadallocator;
     apr_thread_t *thread;
     apr_socket_t *tcpsocket;
     apr_pollset_t *sendpollset;
-    apr_pollset_t *recvpollset;
     int active;
     int base64;
     int sendinitialdata;
@@ -239,7 +240,7 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
         return APR_BADARG;
     }
 
-    if (apr_dbd_pvselect(dbd->driver, r->pool, dbd->handle, &res, statement,
+    if (apr_dbd_pvselect(dbd->driver, mp, dbd->handle, &res, statement,
                          0, tpd->key) != APR_SUCCESS) {
         ap_log_rerror(APLOG_MARK, APLOG_ERR, 0, r,
                       "Query execution error looking up '%s' "
@@ -252,9 +253,9 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
                   "tcp_proxy_query_key: running through results");
 
-    for (rv = apr_dbd_get_row(dbd->driver, r->pool, res, &row, -1);
+    for (rv = apr_dbd_get_row(dbd->driver, mp, res, &row, -1);
          rv != -1;
-         rv = apr_dbd_get_row(dbd->driver, r->pool, res, &row, -1)) {
+         rv = apr_dbd_get_row(dbd->driver, mp, res, &row, -1)) {
         if (rv != 0) {
             ap_log_rerror(APLOG_MARK, APLOG_ERR, rv, r,
                           "Error retrieving results while looking up '%s' "
@@ -356,7 +357,7 @@ static apr_status_t tcp_proxy_do_authenticate(request_rec * r,
     tpd->key = tcp_proxy_get_key(r, tpd, mp);
     if (!tpd->conf->query && !tpd->key) {
         /* key is option if no query */
-        tpd->key = apr_pstrdup(r->pool, "");
+        tpd->key = apr_pstrdup(mp, "");
     }
     if (!tpd->key) {
         ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
@@ -616,23 +617,27 @@ static apr_status_t tcp_proxy_do_tcp_connect(request_rec * r,
 }
 
 
-void guacdump (request_rec * r, char * msg, char * buf, size_t start, size_t end)
+void guacdump (apr_pool_t * p, char * msg, char * buf, size_t start, size_t end)
 {
     size_t s = end-start+1;
     char * b = malloc(s);
     if (b) {
         memcpy(b, buf+start, s-1);
         b[s-1]=0;
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "%s: '%s'", msg, b);
+        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, p, "%s: '%s'", msg, b);
         free (b);
     }
 }
 
 /* This function READS from the tcp socket and WRITES to the web socket */
+/* We will not use ap_log_error in this functin because of potential lack of thread
+ * safety on the allocator. Instead, we shall use ap_log_perror
+ */
 
 void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 {
     char buffer[64];
+    apr_status_t rv;
     TcpProxyData *tpd = (TcpProxyData *) data;
 
     if (!tpd)
@@ -641,11 +646,22 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
     request_rec *r = (tpd->server)->request(tpd->server);
 
     apr_interval_time_t timeout = APR_USEC_PER_SEC * ((tpd->timeout)?tpd->timeout:30);
+    apr_pollset_t * recvpollset = NULL;
+
+    if ((APR_SUCCESS != (rv = apr_pollset_create (&recvpollset, 32, tpd->threadpool, APR_POLLSET_THREADSAFE))) ||
+        !recvpollset) {
+      ap_log_perror(APLOG_MARK, APLOG_DEBUG, rv, tpd->threadpool, "tcp_proxy_run pollset create failed");
+      return NULL;
+    }
+
+    apr_pollfd_t recvpfd = { tpd->threadpool, APR_POLL_SOCKET, APR_POLLIN, 0, { NULL }, NULL };
+    recvpfd.desc.s = tpd->tcpsocket;
+    apr_pollset_add(recvpollset, &recvpfd);
 
     if (!tpd->guacamole) {
         /* Non-guacamole mode - buffer as much as we can */
 
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run start");
+        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run start");
 
 #define WSTCPBUFSIZ 16384
 #define WSTCPCBUFSIZ ((WSTCPBUFSIZ*4/3)+5)
@@ -662,12 +678,11 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
             const apr_pollfd_t *ret_pfd = NULL;
             apr_int32_t num = 0;
-            apr_status_t rv;
 
-            rv = apr_pollset_poll(tpd->recvpollset, got?1000:timeout, &num, &ret_pfd);
+            rv = apr_pollset_poll(recvpollset, got?1000:timeout, &num, &ret_pfd);
 
             if (!(tpd->active && tpd->tcpsocket)) {
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                              "tcp_proxy_run quitting as connection has been marked inactive");
                 break;
             }
@@ -681,11 +696,11 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
                 if (rv == APR_SUCCESS) {
                     /* Poll returned success, but no descriptors were ready. Very odd */
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping 2");
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run: sleeping 2");
                     usleep(10000);      /* this should not happen */
                 }
 
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: poll returned an error");
+                ap_log_perror(APLOG_MARK, APLOG_DEBUG, rv, tpd->threadpool, "tcp_proxy_run: poll returned an error");
                 break;
             }
 
@@ -712,7 +727,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                     tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT /* FIXME */ ,
                                       (unsigned char *) wbuf, towrite);
                 if (written != towrite) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                  "tcp_proxy_run send failed, wrote %lu bytes of %lu",
                                  (unsigned long) written, (unsigned long) got);
                     break;
@@ -730,7 +745,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                      * to be conditions where this happens in a circumstance where a repeat
                      * read produces the same error, so sleep so we don't busy-wait CPU
                      */
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping");
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run: sleeping");
                     usleep(10000);      /* this should not happen */
                 }
                 continue;
@@ -738,7 +753,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 
             char s[1024];
             apr_strerror(rv, s, sizeof(s));
-            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+            ap_log_perror(APLOG_MARK, APLOG_DEBUG, rv, tpd->threadpool,
                          "tcp_proxy_run apr_socket_recv failed len=%lu rv=%d, %s",
                          (unsigned long) len, rv, s);
             
@@ -748,7 +763,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
         tcp_proxy_shutdown_socket(tpd);
         tpd->server->close(tpd->server);
 
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run stop");
+        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run stop");
 
     } else {
 
@@ -799,13 +814,13 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
         char * buf = NULL;
 
 
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run start guacamole mode");
+        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run start guacamole mode");
 
         /* Keep sending messages as long as the connection is active */
         while (tpd->active && tpd->tcpsocket) {
 
             if ((bufreadp > bufsize) || (bufwritep > bufreadp)) {
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                              "tcp_proxy_run guacamole pointer error, buf=%lx bufsize=%lu bufreadp=%lu bufwritep=%lu", (intptr_t)buf, bufsize, bufreadp, bufwritep);
                 goto guacerror;
             }
@@ -837,7 +852,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 if (bufwritep > 0) {
                     char * newbuf = malloc(bufsize + GUARDBYTES);
                     if (!newbuf) {
-                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                      "tcp_proxy_run could not allocate guacamole buffer");
                         goto guacerror;
                     }
@@ -865,18 +880,18 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                         newbufsize = bufreadp + minread; /* Note this is how the initial size is set */
                     if ((newbufsize > maxbufsize) || (newbufsize < bufsize))
                         {
-                            ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                            ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                          "tcp_proxy_run guacamole buffer grew to illegal size");
                             goto guacerror;
                         }
 		    /*
-                      ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                      ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                       "tcp_proxy_run expanding guacamole buffer to %lu bytes", newbufsize);
 		    */
                     char * newbuf = realloc (buf, newbufsize + GUARDBYTES); /* realloc when buf in NULL is a malloc */
                     if (!newbuf) {
                         /* remember to free buf */
-                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                      "tcp_proxy_run could not reallocate guacamole buffer");
                         goto guacerror;
                     }
@@ -887,7 +902,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
 
             /* Check we now have a buffer and sace to read into - this should always be the case */
             if (!buf || (bufsize-bufreadp < minread)) {
-                ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                              "tcp_proxy_run guacamole logic error, buf=%lx bufsize=%lu bufread=%lu minread=%lu", (intptr_t)buf, bufsize, bufreadp, minread);
                 goto guacerror;
             }
@@ -900,44 +915,43 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                 
                 const apr_pollfd_t *ret_pfd = NULL;
                 apr_int32_t num = 0;
-                apr_status_t rv;
                 
-                rv = apr_pollset_poll(tpd->recvpollset, timeout, &num, &ret_pfd);
+                rv = apr_pollset_poll(recvpollset, timeout, &num, &ret_pfd);
                 
                 if (!(tpd->active && tpd->tcpsocket)) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                  "tcp_proxy_run quitting guacamole mode as connection has been marked inactive");
                     goto guacdone;
                 }
                 
                 if (APR_STATUS_IS_TIMEUP(rv)) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                  "tcp_proxy_run quitting guacamole mode as ws poll has timed out");
                     goto guacdone;
                 }
 
                 if (rv != APR_SUCCESS) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: poll returned an error");
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, rv, tpd->threadpool, "tcp_proxy_run: poll returned an error");
                     goto guacerror;
                 }
 
                 if (num<=0) {
                     /* Poll returned success, but no descriptors were ready. Very odd */
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping guac 2");
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run: sleeping guac 2");
                     usleep(10000);      /* this should not happen */
                     continue;
                 }
 
                 rv = apr_socket_recv(tpd->tcpsocket, buf+bufreadp, &len);
                 if (APR_STATUS_IS_EAGAIN(rv)) { /* we have no data to read yet, we should try rereading */
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run: sleeping guac 3");
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run: sleeping guac 3");
                     usleep(10000);
                     continue;
                 }
 
                 if (APR_STATUS_IS_EOF(rv) || !len) {
                     /* we lost the TCP session */
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                  "tcp_proxy_run quitting guacamole mode as TCP connection closed");
                     goto guacdone;
                 }
@@ -949,7 +963,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
             bufreadp += len;
 
 	    /*
-              ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+              ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
               "tcp_proxy_run ***guac read bytes len=%lu bufwrirep=%lu bufreadpp=%lu", len, bufreadp, bufwritep);
 	    */
 
@@ -959,30 +973,32 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
              */
 
             size_t p = bufwritep;
+	    size_t lastwholecommand = bufwritep;
+	    size_t towrite = 0;
             while (p < bufreadp) {
 
                 /* Skip along until we find a semicolon */
                 int write=0;
                 while (!write) {
                     /*
-                      ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                      ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                       "tcp_proxy_run ***guac decode loop p=%lu bufwrirep=%lu bufreadpp=%lu", p, bufreadp, bufwritep);
-                      guacdump(r, "tcp_proxy_run ***guac string is", buf, p, bufreadp);
+                      guacdump(tpd->threadpool, "tcp_proxy_run ***guac string is", buf, p, bufreadp);
                     */
 
                     if (p >= bufreadp)
-                        goto readmore;
+                        goto writelastwholecommand;
                     size_t arglen = 0;
                     while (isdigit(buf[p])) {
                         arglen = arglen * 10 + ( buf[p++] - '0');
                         if (p >= bufreadp)
-                            goto readmore;
+                            goto writelastwholecommand;
                     }
                     /* arglen must be non-zero, and we know buf[p] is valid (as p<bufreadp) and must point
                      * to the dot
                      */
                     if (!arglen || (buf[p] != '.')) {
-                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                      "tcp_proxy_run bad guacamole length");
                         goto guacerror;
                     }
@@ -993,7 +1009,7 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                      */
                     p+=arglen+1;
                     if (p >= bufreadp)
-                        goto readmore;
+                        goto writelastwholecommand;
                     switch (buf[p++]) {
                     case ',':
                         continue;
@@ -1001,50 +1017,44 @@ void *APR_THREAD_FUNC tcp_proxy_run(apr_thread_t * thread, void *data)
                         write = 1;
                         break;
                     default:
-                        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                      "tcp_proxy_run bad guacamole terminator");
                         goto guacerror;
                         break;
                     }
                 }
+		
+		lastwholecommand = p;
 
-                /* So now we know we can write bufwritep ... p */
+                /* And loop to see whether we have any more instructions */
+            }
 
-                /* FIXME: support base64 - actually guacamole doesn't use it */
+          writelastwholecommand:
+            /* So now we know we can write bufwritep ... lastwholecommand */
 
-                size_t towrite = p - bufwritep;
-		/*
-                  ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
-                  "tcp_proxy_run ***guac writing %lu bytes", towrite);
-		*/
+            /* FIXME: support base64 - actually guacamole doesn't use it */
 
-		if (towrite <= 0) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
-                                 "tcp_proxy_run guacamole logic error: zero length instruction");
-		    goto guacerror;
-		}
+            towrite = lastwholecommand - bufwritep;
 
+            if (towrite > 0) {
                 size_t written =
                     tpd->server->send(tpd->server, MESSAGE_TYPE_TEXT,
                                       (unsigned char *) (buf + bufwritep), towrite);
                 if (written != towrite) {
-                    ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server,
+                    ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool,
                                  "tcp_proxy_run guacamole send failed, wrote %lu bytes of %lu",
                                  (unsigned long) written, (unsigned long) len);
                     goto guacerror;
                 }
 
                 /* Step forward past the bit we've just written */
-                bufwritep = p;
-                
-                /* And loop to see whether we have any more instructions */
+                bufwritep = lastwholecommand;
             }
-          readmore:
-            continue; /* to avoid 'label at end of compound statement' error */
+
         }
 
       guacdone:
-        ap_log_error(APLOG_MARK, APLOG_DEBUG, 0, r->server, "tcp_proxy_run stop guacamole mode");
+        ap_log_perror(APLOG_MARK, APLOG_DEBUG, 0, tpd->threadpool, "tcp_proxy_run stop guacamole mode");
       guacerror:
 	if (buf)
             free (buf);
@@ -1190,150 +1200,168 @@ void *CALLBACK tcp_proxy_on_connect(const WebSocketServer * server)
 {
     TcpProxyData *tpd = NULL;
 
-    if ((server != NULL) && (server->version == WEBSOCKET_SERVER_VERSION_1)) {
-        /* Get access to the request_rec strucure for this connection */
-        request_rec *r = server->request(server);
+    /* Get access to the request_rec strucure for this connection */
+    request_rec *r = server->request(server);
+    if (!r) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect bad request");
+        return NULL;
+    }
 
-        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect starting");
+    if (!server || (server->version != WEBSOCKET_SERVER_VERSION_1)) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect bad server");
+        return NULL;
+    }
+        
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect starting");
 
-        if (r != NULL) {
+    size_t i = 0, count = server->protocol_count(server);
 
-            apr_pool_t *pool = NULL;
-            size_t i = 0, count = server->protocol_count(server);
+    websocket_tcp_proxy_config_rec *conf =
+        (websocket_tcp_proxy_config_rec *)
+        ap_get_module_config(r->per_dir_config,
+                             &websocket_vnc_proxy_module);
+    const char *requiredprotocol = conf ? conf->protocol : NULL;
 
-            websocket_tcp_proxy_config_rec *conf =
-                (websocket_tcp_proxy_config_rec *)
-                ap_get_module_config(r->per_dir_config,
-                                     &websocket_vnc_proxy_module);
-            const char *requiredprotocol = conf ? conf->protocol : NULL;
+    if (requiredprotocol) {
+        for (i = 0; i < count; i++) {
+            const char *protocol = server->protocol_index(server, i);
 
-            if (requiredprotocol) {
-                for (i = 0; i < count; i++) {
-                    const char *protocol = server->protocol_index(server, i);
-
-                    if (protocol && (strcmp(protocol, requiredprotocol) == 0)) {
-                        /* If the client can speak the protocol, set it in the response */
-                        server->protocol_set(server, protocol);
-                        break;
-                    }
-                }
-            }
-            else {
-                count = 1;      /* ensure i<count */
-            }
-
-            /* If the protocol negotiation worked, create a new memory pool */
-            if ((i < count) &&
-                (apr_pool_create(&pool, r->pool) == APR_SUCCESS)) {
-
-                ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                              "tcp_proxy_on_connect protocol correct");
-
-                /* Allocate memory to hold the tcp proxy state */
-                if ((tpd =
-                     (TcpProxyData *) apr_palloc(pool,
-                                                 sizeof(TcpProxyData))) !=
-                    NULL) {
-                    apr_thread_t *thread = NULL;
-                    apr_threadattr_t *thread_attr = NULL;
-
-                    tpd->server = server;
-                    tpd->pool = pool;
-                    tpd->thread = NULL;
-                    tpd->tcpsocket = NULL;
-                    tpd->active = 1;
-                    tpd->base64 = 0;
-                    tpd->sendinitialdata = 0;
-                    tpd->timeout = 30;
-                    tpd->guacamole = 0;
-                    tpd->port = "echo";
-                    tpd->host = "127.0.0.1";
-                    tpd->secret = "none";
-                    tpd->initialdata = NULL;
-                    tpd->nonce = NULL;
-                    tpd->sendpollset = NULL;
-                    tpd->recvpollset = NULL;
-                    tpd->key = NULL;
-                    tpd->conf = conf;
-                    tpd->paramhash = NULL;
-                    tpd->statement = NULL;
-                    tpd->localip = NULL;
-                    
-                    if (conf) {
-                        tpd->base64 = conf->base64;
-                        tpd->sendinitialdata = conf->sendinitialdata;
-                        tpd->timeout = conf->timeout;
-                        tpd->guacamole = conf->guacamole;
-                        if (conf->host)
-                            tpd->host = apr_pstrdup(pool, conf->host);
-                        if (conf->port)
-                            tpd->port = apr_pstrdup(pool, conf->port);
-                        if (conf->secret)
-                            tpd->secret = apr_pstrdup(pool, conf->secret);
-                        if (conf->localip)
-                            tpd->localip = apr_pstrdup(pool, conf->localip);
-                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                                      "tcp_proxy_on_connect: base64 is %d",
-                                      conf->base64);
-                    }
-                    else {
-                        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
-                                      "tcp_proxy_on_connect: no config");
-                    }
-
-                    /* Check we can authenticate the incoming user (this is a hook for others to add to)
-                     * Check we can connect
-                     * And if we have initial data to send, then send that
-                     */
-                    if ((APR_SUCCESS ==
-                         tcp_proxy_do_authenticate(r, tpd, pool))
-                        && (APR_SUCCESS ==
-                            tcp_proxy_do_tcp_connect(r, tpd, pool))
-                        && (APR_SUCCESS ==
-                            tcp_proxy_send_initial_data(r, tpd, pool))) {
-
-                        /* see the tutorial about the reason why we have to specify options again */
-                        apr_socket_opt_set(tpd->tcpsocket, APR_SO_NONBLOCK, 1);
-                        apr_socket_opt_set(tpd->tcpsocket, APR_SO_KEEPALIVE, 1);
-                        apr_socket_timeout_set(tpd->tcpsocket, 0);
-
-                        apr_pollset_create (&tpd->recvpollset, 32, pool, APR_POLLSET_THREADSAFE);
-                        apr_pollfd_t recvpfd = { pool, APR_POLL_SOCKET, APR_POLLIN, 0, { NULL }, NULL };
-                        recvpfd.desc.s = tpd->tcpsocket;
-                        apr_pollset_add(tpd->recvpollset, &recvpfd);
-
-                        apr_pollset_create(&tpd->sendpollset, 32, r->pool, APR_POLLSET_THREADSAFE);
-                        apr_pollfd_t sendpfd = { r->pool, APR_POLL_SOCKET, APR_POLLOUT, 0, { NULL }, NULL };
-                        sendpfd.desc.s = tpd->tcpsocket;
-                        apr_pollset_add(tpd->sendpollset, &sendpfd);
-
-                        /* Create a non-detached thread that will perform the work */
-                        if ((apr_threadattr_create(&thread_attr, pool) ==
-                             APR_SUCCESS)
-                            && (apr_threadattr_detach_set(thread_attr, 0) ==
-                                APR_SUCCESS)
-                            &&
-                            (apr_thread_create
-                             (&thread, thread_attr, tcp_proxy_run, tpd,
-                              pool) == APR_SUCCESS)) {
-                            tpd->thread = thread;
-                            /* Success */
-                            pool = NULL;
-                        }
-                        else {
-                            tpd = NULL;
-                        }
-                    }
-                    else
-                        tpd = NULL;
-                }
-                if (pool != NULL) {
-                    apr_pool_destroy(pool);
-                }
+            if (protocol && (strcmp(protocol, requiredprotocol) == 0)) {
+                /* If the client can speak the protocol, set it in the response */
+                server->protocol_set(server, protocol);
+                break;
             }
         }
     }
-    return tpd;
+    else {
+        count = 1;      /* ensure i<count */
+    }
+
+    if (i>=count) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect bad protocol");
+        return NULL;
+    }
+
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_on_connect protocol correct");
+
+    /* We create two pools. 'pool' is for access by this thread, 'threadpool' is for
+     * access by thre thread, and has a separate allocator, no parent, and is freed
+     * manually.
+     */
+    apr_pool_t *pool = NULL;
+    apr_pool_t *threadpool = NULL;
+    apr_thread_mutex_t * threadallocatormutex = NULL;
+    apr_allocator_t * threadallocator = NULL;
+
+    if (!( ( apr_pool_create(&pool, r->pool) == APR_SUCCESS) &&
+           ( apr_thread_mutex_create(&threadallocatormutex, APR_THREAD_MUTEX_UNNESTED, pool) == APR_SUCCESS) &&
+           ( apr_allocator_create(&threadallocator) == APR_SUCCESS) &&
+           ( apr_allocator_mutex_set(threadallocator, threadallocatormutex), 1 ) &&
+           ( apr_pool_create_ex(&threadpool, NULL, NULL, threadallocator) == APR_SUCCESS) && /* WARNING: pool has no parent */
+           threadpool && threadallocator && threadallocatormutex && pool
+            )) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_on_connect could not allocate pool");
+        return NULL;
+    }
+
+    /* Past this point we must ensure the allocator and the pool are manually destroyed */
+
+    /* Allocate memory to hold the tcp proxy state */
+    if (NULL == (tpd = (TcpProxyData *) apr_palloc(pool, sizeof(TcpProxyData)))) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_connect could not allocate tpd structure");
+        goto destroypool;
+    }        
+
+    apr_thread_t *thread = NULL;
+    apr_threadattr_t *thread_attr = NULL;
+    
+    tpd->server = server;
+    tpd->pool = pool;
+    tpd->thread = NULL;
+    tpd->tcpsocket = NULL;
+    tpd->active = 1;
+    tpd->base64 = 0;
+    tpd->sendinitialdata = 0;
+    tpd->timeout = 30;
+    tpd->guacamole = 0;
+    tpd->port = "echo";
+    tpd->host = "127.0.0.1";
+    tpd->secret = "none";
+    tpd->initialdata = NULL;
+    tpd->nonce = NULL;
+    tpd->sendpollset = NULL;
+    tpd->key = NULL;
+    tpd->conf = conf;
+    tpd->paramhash = NULL;
+    tpd->statement = NULL;
+    tpd->localip = NULL;
+                    
+    if (!conf) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_on_connect: no config");
+        goto destroypool;
+    }
+
+    tpd->base64 = conf->base64;
+    tpd->sendinitialdata = conf->sendinitialdata;
+    tpd->timeout = conf->timeout;
+    tpd->guacamole = conf->guacamole;
+    if (conf->host)
+        tpd->host = apr_pstrdup(pool, conf->host);
+    if (conf->port)
+        tpd->port = apr_pstrdup(pool, conf->port);
+    if (conf->secret)
+        tpd->secret = apr_pstrdup(pool, conf->secret);
+    if (conf->localip)
+        tpd->localip = apr_pstrdup(pool, conf->localip);
+    ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                  "tcp_proxy_on_connect: base64 is %d",
+                  conf->base64);
+
+    /* Check we can authenticate the incoming user (this is a hook for others to add to)
+     * Check we can connect
+     * And if we have initial data to send, then send that
+     */
+    if (!((APR_SUCCESS == tcp_proxy_do_authenticate(r, tpd, pool)) &&
+	  (APR_SUCCESS == tcp_proxy_do_tcp_connect(r, tpd, pool)) &&
+	  (APR_SUCCESS == tcp_proxy_send_initial_data(r, tpd, pool))
+            )) {
+        ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r,
+                      "tcp_proxy_on_connect: closing connection as authentication / initial data failed");
+        goto destroypool;
+    }
+
+    /* see the tutorial about the reason why we have to specify options again */
+    apr_socket_opt_set(tpd->tcpsocket, APR_SO_NONBLOCK, 1);
+    apr_socket_opt_set(tpd->tcpsocket, APR_SO_KEEPALIVE, 1);
+    apr_socket_timeout_set(tpd->tcpsocket, 0);
+    
+    apr_pollset_create(&tpd->sendpollset, 32, pool, APR_POLLSET_THREADSAFE);
+    apr_pollfd_t sendpfd = { pool, APR_POLL_SOCKET, APR_POLLOUT, 0, { NULL }, NULL };
+    sendpfd.desc.s = tpd->tcpsocket;
+    apr_pollset_add(tpd->sendpollset, &sendpfd);
+
+    tpd->threadpool = threadpool;
+    tpd->threadallocator = threadallocator;
+    
+    /* Create a non-detached thread that will perform the work */
+    if ((APR_SUCCESS == apr_threadattr_create(&thread_attr, pool)) &&
+        (APR_SUCCESS == apr_threadattr_detach_set(thread_attr, 0)) &&
+        (APR_SUCCESS == apr_thread_create(&thread, thread_attr, tcp_proxy_run, tpd, pool))
+        ) {
+        tpd->thread = thread;
+        /* Success */
+	return tpd;
+    }
+    tpd->threadpool = NULL;
+    tpd->threadallocator = NULL;
+
+  destroypool:
+    apr_pool_destroy(threadpool);
+    apr_allocator_destroy(threadallocator);
+    return NULL;
 }
 
 void CALLBACK tcp_proxy_on_disconnect(void *plugin_private,
@@ -1344,7 +1372,7 @@ void CALLBACK tcp_proxy_on_disconnect(void *plugin_private,
     request_rec *r = server->request(server);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, "tcp_proxy_on_disconnect");
 
-    if (tpd != 0) {
+    if (tpd) {
         /* When disconnecting, inform the thread that it is time to stop */
         tpd->active = 0;
         tcp_proxy_shutdown_socket(tpd);
@@ -1354,14 +1382,20 @@ void CALLBACK tcp_proxy_on_disconnect(void *plugin_private,
             /* Wait for the thread to finish */
             status = apr_thread_join(&status, tpd->thread);
         }
+        if (tpd->threadpool) {
+            apr_pool_destroy(tpd->threadpool);
+            tpd->threadpool = NULL;
+        }
+        if (tpd->threadallocator) {
+            apr_allocator_destroy(tpd->threadallocator);
+            tpd->threadallocator = NULL;
+        }
         tcp_proxy_shutdown_socket(tpd);
 
         if (tpd->tcpsocket) {
             apr_socket_close(tpd->tcpsocket);
             tpd->tcpsocket = NULL;
         }
-
-        apr_pool_destroy(tpd->pool);
     }
 }
 

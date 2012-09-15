@@ -482,16 +482,21 @@ static void mod_websocket_data_framing(const WebSocketServer *server,
      * for output thread bucket brigade.
      */
 
+    apr_thread_mutex_t *oallocatormutex = NULL;
+    apr_allocator_t * oallocator = NULL;
     apr_pool_t *opool = NULL;
-    if (apr_pool_create(&opool, r->pool) != APR_SUCCESS)
-        return;
-    apr_bucket_alloc_t *oallocator = apr_bucket_alloc_create(opool);
-    if (!oallocator)
-        return;
-    apr_bucket_brigade *obb =
-        apr_brigade_create(opool, oallocator);
+    apr_bucket_alloc_t *obucketallocator = NULL;
+    apr_bucket_brigade * obb = NULL;
+    
+    if (
+        ( apr_thread_mutex_create(&oallocatormutex, APR_THREAD_MUTEX_UNNESTED, r->pool) == APR_SUCCESS) &&
+        ( apr_allocator_create(&oallocator) == APR_SUCCESS) &&
+        ( apr_allocator_mutex_set(oallocator, oallocatormutex), 1 ) &&
+        ( apr_pool_create_ex(&opool, NULL, NULL, oallocator) == APR_SUCCESS) && /* WARNING: pool has no parent */
+        ( NULL != (obucketallocator = apr_bucket_alloc_create(opool))) &&
+        ( NULL != (obb = apr_brigade_create(opool, obucketallocator)))
+        ) {
 
-    if (obb != NULL) {
         unsigned char block[BLOCK_DATA_SIZE];
         apr_int64_t block_size;
         apr_int64_t extension_bytes_remaining = 0;
@@ -824,7 +829,15 @@ static void mod_websocket_data_framing(const WebSocketServer *server,
         /* We are done with the bucket brigade */
         apr_thread_mutex_lock(state->mutex);
         state->obb = NULL;
-        apr_brigade_destroy(obb);
+
+        /* Destroy the pool (which does not have a parent) manually
+         * which will destroy (inter alia) the bucket brigade and
+         * bucket brigade allocator
+         */
+        apr_pool_destroy(opool);
+        apr_allocator_destroy(oallocator);
+        /* No need to destroy the mutex as that belongs to r->pool */
+
     }
 }
 
@@ -948,7 +961,7 @@ static int mod_websocket_method_handler(request_rec *r)
                     }
 
                     apr_thread_mutex_create(&state.mutex,
-                                            APR_THREAD_MUTEX_DEFAULT,
+                                            APR_THREAD_MUTEX_UNNESTED,
                                             r->pool);
                     apr_thread_mutex_lock(state.mutex);
 
