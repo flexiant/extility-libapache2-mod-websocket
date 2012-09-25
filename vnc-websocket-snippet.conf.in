@@ -40,7 +40,7 @@
         	  	  WebSocketTcpProxyHost nowhere.example.com.
 		  	  WebSocketTcpProxyPort @VNCPROXY_PORT@
         	  	  WebSocketTcpProxyProtocol guacamole
-			  WebSocketTcpProxyQuery "SELECT 'guacamole' AS handler, CASE vnc_protocol WHEN 0 THEN 'rdp' WHEN 0 THEN 'vnc' ELSE 'error' END AS protocol, vnc_node_username AS username, CASE vnc_protocol WHEN 0 THEN vnc_node_password ELSE vnc_password END AS password, vnc_server_node AS hostname, CASE vnc_protocol WHEN 0 THEN 2179 ELSE vnc_server_port END AS port, vnc_proxy_ip AS connecthost, vnc_proxy_port AS connectport, vnc_preconnection_blob AS pcid, 'false' as security_layer_negotiation, 'true' AS ignore_certificate, 'nla' AS security, 'true' AS authentication FROM vnc_session WHERE session_key=%s AND vnc_handler=1"
+			  WebSocketTcpProxyQuery "SELECT 'guacamole' AS handler, CASE vnc_protocol WHEN 0 THEN 'rdp' WHEN 1 THEN 'vnc' ELSE 'error' END AS protocol, vnc_node_username AS username, CASE vnc_protocol WHEN 0 THEN vnc_node_password ELSE vnc_password END AS password, vnc_server_node AS hostname, CASE vnc_protocol WHEN 0 THEN 2179 ELSE vnc_server_port END AS port, vnc_proxy_ip AS connecthost, vnc_proxy_port AS connectport, vnc_preconnection_blob AS pcid, 'false' as security_layer_negotiation, 'true' AS ignore_certificate, 'nla' AS security, 'true' AS authentication FROM vnc_session WHERE session_key=%s AND vnc_handler=1"
         	  	  WebSocketTcpProxySendInitialData on
 			  WebSocketTcpProxyGuacamole on
         	  	  WebSocketTcpProxySecret @VNCPROXY_PASSWORD@
@@ -78,7 +78,7 @@
         	  	  WebSocketTcpProxyHost nowhere.example.com.
 		  	  WebSocketTcpProxyPort @VNCPROXY_PORT@
         	  	  WebSocketTcpProxyProtocol guacamole
-			  WebSocketTcpProxyQuery "SELECT 'guacamole' AS handler, CASE vnc_protocol WHEN 0 THEN 'rdp' WHEN 0 THEN 'vnc' ELSE 'error' END AS protocol, vnc_node_username AS username, CASE vnc_protocol WHEN 0 THEN vnc_node_password ELSE vnc_password END AS password, vnc_server_node AS hostname, CASE vnc_protocol WHEN 0 THEN 2179 ELSE vnc_server_port END AS port, vnc_proxy_ip AS connecthost, vnc_proxy_port AS connectport, vnc_preconnection_blob AS pcid, 'false' as security_layer_negotiation, 'true' AS ignore_certificate, 'nla' AS security, 'true' AS authentication FROM vnc_session WHERE session_key=%s AND vnc_handler=1"
+			  WebSocketTcpProxyQuery "SELECT 'guacamole' AS handler, CASE vnc_protocol WHEN 0 THEN 'rdp' WHEN 1 THEN 'vnc' ELSE 'error' END AS protocol, vnc_node_username AS username, CASE vnc_protocol WHEN 0 THEN vnc_node_password ELSE vnc_password END AS password, vnc_server_node AS hostname, CASE vnc_protocol WHEN 0 THEN 2179 ELSE vnc_server_port END AS port, vnc_proxy_ip AS connecthost, vnc_proxy_port AS connectport, vnc_preconnection_blob AS pcid, 'false' as security_layer_negotiation, 'true' AS ignore_certificate, 'nla' AS security, 'true' AS authentication FROM vnc_session WHERE session_key=%s AND vnc_handler=1"
         	  	  WebSocketTcpProxySendInitialData on
 			  WebSocketTcpProxyGuacamole on
         	  	  WebSocketTcpProxySecret @VNCPROXY_PASSWORD@
