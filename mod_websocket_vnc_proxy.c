@@ -199,13 +199,13 @@ static apr_status_t tcp_proxy_query_key (request_rec * r, TcpProxyData * tpd, ap
 
     websocket_tcp_proxy_config_rec *conf = tpd->conf;
 
-    /* Check we have a real key */
-    if (!tpd->key || !*tpd->key)
-        return APR_BADARG;
-
     /* If no query is specified, we are fine */
     if (!conf->query)
         return APR_SUCCESS;
+
+    /* Check we have a real key */
+    if (!tpd->key || !*tpd->key)
+        return APR_BADARG;
 
     /* Check the key is valid */
     for (c = tpd->key; *c; c++) {
