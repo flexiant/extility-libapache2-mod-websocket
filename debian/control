@@ -7,7 +7,7 @@ Build-Depends: debhelper (>= 5.0.0), apache2-prefork-dev (>= 2.0.50-10) | apache
 
 Package: extility-libapache2-mod-websocket
 Architecture: any
-Depends: ${shlibs:Depends}, (apache2.2-common (>= 2.2.3-3) | apache2)
+Depends: ${shlibs:Depends}, apache2.2-common (>= 2.2.3-3) | apache2 (>= 2.2.3-3)
 Replaces: libapache2-mod-websocket
 Conflicts: libapache2-mod-websocket
 Description: Extility Apache 2 module for websockets and vncproxy
